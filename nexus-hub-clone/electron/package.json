@@ -1,0 +1,43 @@
+{
+  "name": "nexus-os-desktop",
+  "version": "1.0.0",
+  "description": "Nexus OS — Desktop Application",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "NEXUS_URL=http://localhost:18245/nexus electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "build:all": "electron-builder --mac --win --linux"
+  },
+  "build": {
+    "appId": "app.nexusos.desktop",
+    "productName": "Nexus OS",
+    "copyright": "Copyright © 2025 Nexus OS",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.mac.plist",
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }]
+    },
+    "win": {
+      "icon": "icon.ico",
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "linux": {
+      "icon": "icon.png",
+      "target": ["AppImage", "deb"],
+      "category": "Office"
+    },
+    "files": ["main.js", "preload.js"],
+    "extraFiles": [],
+    "directories": { "buildResources": "assets" }
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

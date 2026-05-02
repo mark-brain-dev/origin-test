@@ -1,0 +1,1910 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: Nexus OS API - Knowledge Management + AI Platform
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: users
+    description: User profile operations
+  - name: workspaces
+    description: Workspace management
+  - name: pages
+    description: Page CRUD and tree operations
+  - name: blocks
+    description: Block content operations
+  - name: ai-providers
+    description: AI provider management
+  - name: ai-chat
+    description: AI chat and completions
+  - name: memory
+    description: AI memory management
+  - name: skills
+    description: AI skill templates
+  - name: databases
+    description: Notion-style database views
+  - name: db-rows
+    description: Database row operations
+  - name: search
+    description: Full-text and semantic search
+  - name: tags
+    description: Tag management
+  - name: templates
+    description: Page templates
+  - name: activity
+    description: Recent activity and stats
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  # ── USERS ────────────────────────────────────────────────────────────────────
+  /users/me:
+    get:
+      operationId: getMe
+      tags: [users]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+    patch:
+      operationId: updateMe
+      tags: [users]
+      summary: Update current user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserBody"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  # ── WORKSPACES ───────────────────────────────────────────────────────────────
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      tags: [workspaces]
+      summary: List user workspaces
+      responses:
+        "200":
+          description: List of workspaces
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Workspace"
+    post:
+      operationId: createWorkspace
+      tags: [workspaces]
+      summary: Create a workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkspaceBody"
+      responses:
+        "201":
+          description: Created workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+
+  /workspaces/{workspaceId}:
+    get:
+      operationId: getWorkspace
+      tags: [workspaces]
+      summary: Get a workspace
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+    patch:
+      operationId: updateWorkspace
+      tags: [workspaces]
+      summary: Update a workspace
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWorkspaceBody"
+      responses:
+        "200":
+          description: Updated workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+    delete:
+      operationId: deleteWorkspace
+      tags: [workspaces]
+      summary: Delete a workspace
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /workspaces/{workspaceId}/stats:
+    get:
+      operationId: getWorkspaceStats
+      tags: [workspaces]
+      summary: Get workspace statistics
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStats"
+
+  # ── PAGES ────────────────────────────────────────────────────────────────────
+  /workspaces/{workspaceId}/pages:
+    get:
+      operationId: listPages
+      tags: [pages]
+      summary: List pages in workspace
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: parentId
+          in: query
+          schema:
+            type: string
+          description: Filter by parent page ID (null = root pages)
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [page, database, wiki, project, daily]
+        - name: isFavorite
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: List of pages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Page"
+    post:
+      operationId: createPage
+      tags: [pages]
+      summary: Create a page
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePageBody"
+      responses:
+        "201":
+          description: Created page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+
+  /workspaces/{workspaceId}/pages/tree:
+    get:
+      operationId: getPageTree
+      tags: [pages]
+      summary: Get full page tree for sidebar
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Page tree
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PageTreeNode"
+
+  /workspaces/{workspaceId}/pages/recent:
+    get:
+      operationId: getRecentPages
+      tags: [pages]
+      summary: Get recently visited pages
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Recent pages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Page"
+
+  /pages/{pageId}:
+    get:
+      operationId: getPage
+      tags: [pages]
+      summary: Get a page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+    patch:
+      operationId: updatePage
+      tags: [pages]
+      summary: Update a page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePageBody"
+      responses:
+        "200":
+          description: Updated page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+    delete:
+      operationId: deletePage
+      tags: [pages]
+      summary: Delete a page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /pages/{pageId}/backlinks:
+    get:
+      operationId: getPageBacklinks
+      tags: [pages]
+      summary: Get pages that link to this page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Backlinks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Page"
+
+  /pages/{pageId}/graph:
+    get:
+      operationId: getPageGraph
+      tags: [pages]
+      summary: Get graph data (nodes + edges) for a page's connections
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            default: 2
+      responses:
+        "200":
+          description: Graph data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphData"
+
+  /workspaces/{workspaceId}/graph:
+    get:
+      operationId: getWorkspaceGraph
+      tags: [pages]
+      summary: Get full workspace knowledge graph
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Full graph data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphData"
+
+  # ── BLOCKS ───────────────────────────────────────────────────────────────────
+  /pages/{pageId}/blocks:
+    get:
+      operationId: getPageBlocks
+      tags: [blocks]
+      summary: Get all blocks for a page
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Blocks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Block"
+    post:
+      operationId: createBlock
+      tags: [blocks]
+      summary: Create a block
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBlockBody"
+      responses:
+        "201":
+          description: Created block
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Block"
+
+  /pages/{pageId}/content:
+    get:
+      operationId: getPageContent
+      tags: [blocks]
+      summary: Get page content as TipTap JSON
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Page content JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageContent"
+    put:
+      operationId: savePageContent
+      tags: [blocks]
+      summary: Save page content (TipTap JSON)
+      parameters:
+        - name: pageId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SavePageContentBody"
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageContent"
+
+  # ── AI PROVIDERS ─────────────────────────────────────────────────────────────
+  /ai/providers:
+    get:
+      operationId: listAiProviders
+      tags: [ai-providers]
+      summary: List configured AI providers
+      responses:
+        "200":
+          description: AI providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AiProvider"
+    post:
+      operationId: createAiProvider
+      tags: [ai-providers]
+      summary: Add an AI provider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAiProviderBody"
+      responses:
+        "201":
+          description: Created provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProvider"
+
+  /ai/providers/catalog:
+    get:
+      operationId: getAiProviderCatalog
+      tags: [ai-providers]
+      summary: Get catalog of all supported AI providers with base URLs
+      responses:
+        "200":
+          description: Provider catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AiProviderCatalogEntry"
+
+  /ai/providers/{providerId}:
+    patch:
+      operationId: updateAiProvider
+      tags: [ai-providers]
+      summary: Update an AI provider
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAiProviderBody"
+      responses:
+        "200":
+          description: Updated provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProvider"
+    delete:
+      operationId: deleteAiProvider
+      tags: [ai-providers]
+      summary: Remove an AI provider
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /ai/providers/{providerId}/test:
+    post:
+      operationId: testAiProvider
+      tags: [ai-providers]
+      summary: Test a provider connection
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiProviderTestResult"
+
+  # ── AI CHAT ──────────────────────────────────────────────────────────────────
+  /ai/chat:
+    post:
+      operationId: aiChat
+      tags: [ai-chat]
+      summary: Send a message to AI (returns full response)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiChatBody"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiChatResponse"
+
+  /ai/generate:
+    post:
+      operationId: aiGenerate
+      tags: [ai-chat]
+      summary: Generate content for a page (AI writing assistant)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiGenerateBody"
+      responses:
+        "200":
+          description: Generated content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiGenerateResponse"
+
+  /ai/conversations:
+    get:
+      operationId: listAiConversations
+      tags: [ai-chat]
+      summary: List AI conversation history
+      responses:
+        "200":
+          description: Conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AiConversation"
+
+  # ── MEMORY ───────────────────────────────────────────────────────────────────
+  /memory:
+    get:
+      operationId: listMemories
+      tags: [memory]
+      summary: List AI memories
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [short_term, long_term, skill]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Memories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Memory"
+    post:
+      operationId: createMemory
+      tags: [memory]
+      summary: Create a memory entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMemoryBody"
+      responses:
+        "201":
+          description: Created memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Memory"
+
+  /memory/{memoryId}:
+    delete:
+      operationId: deleteMemory
+      tags: [memory]
+      summary: Delete a memory
+      parameters:
+        - name: memoryId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /memory/search:
+    post:
+      operationId: searchMemory
+      tags: [memory]
+      summary: Semantic search through memories
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemorySearchBody"
+      responses:
+        "200":
+          description: Matching memories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Memory"
+
+  # ── SKILLS ───────────────────────────────────────────────────────────────────
+  /skills:
+    get:
+      operationId: listSkills
+      tags: [skills]
+      summary: List AI skills
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Skills
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Skill"
+    post:
+      operationId: createSkill
+      tags: [skills]
+      summary: Create a custom skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSkillBody"
+      responses:
+        "201":
+          description: Created skill
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Skill"
+
+  /skills/{skillId}/run:
+    post:
+      operationId: runSkill
+      tags: [skills]
+      summary: Execute a skill
+      parameters:
+        - name: skillId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunSkillBody"
+      responses:
+        "200":
+          description: Skill result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillRunResult"
+
+  # ── DATABASES ────────────────────────────────────────────────────────────────
+  /databases/{databaseId}:
+    get:
+      operationId: getDatabase
+      tags: [databases]
+      summary: Get a database schema
+      parameters:
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Database
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Database"
+    patch:
+      operationId: updateDatabase
+      tags: [databases]
+      summary: Update database schema or view
+      parameters:
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDatabaseBody"
+      responses:
+        "200":
+          description: Updated database
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Database"
+
+  /databases/{databaseId}/rows:
+    get:
+      operationId: getDatabaseRows
+      tags: [db-rows]
+      summary: Get rows from a database
+      parameters:
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: view
+          in: query
+          schema:
+            type: string
+            enum: [table, kanban, calendar, gallery, list]
+        - name: filter
+          in: query
+          schema:
+            type: string
+          description: JSON filter expression
+        - name: sort
+          in: query
+          schema:
+            type: string
+          description: JSON sort expression
+        - name: groupBy
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Database rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseRowsResponse"
+    post:
+      operationId: createDatabaseRow
+      tags: [db-rows]
+      summary: Create a row in a database
+      parameters:
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDatabaseRowBody"
+      responses:
+        "201":
+          description: Created row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseRow"
+
+  /databases/{databaseId}/rows/{rowId}:
+    patch:
+      operationId: updateDatabaseRow
+      tags: [db-rows]
+      summary: Update a row
+      parameters:
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: rowId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDatabaseRowBody"
+      responses:
+        "200":
+          description: Updated row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseRow"
+    delete:
+      operationId: deleteDatabaseRow
+      tags: [db-rows]
+      summary: Delete a row
+      parameters:
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: rowId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  # ── SEARCH ───────────────────────────────────────────────────────────────────
+  /search:
+    get:
+      operationId: search
+      tags: [search]
+      summary: Search across all pages and content
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: workspaceId
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [page, block, database, all]
+            default: all
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResults"
+
+  # ── TAGS ─────────────────────────────────────────────────────────────────────
+  /workspaces/{workspaceId}/tags:
+    get:
+      operationId: listTags
+      tags: [tags]
+      summary: List all tags in workspace
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tags
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tag"
+
+  # ── TEMPLATES ─────────────────────────────────────────────────────────────────
+  /templates:
+    get:
+      operationId: listTemplates
+      tags: [templates]
+      summary: List available templates
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Template"
+
+  # ── ACTIVITY ──────────────────────────────────────────────────────────────────
+  /workspaces/{workspaceId}/activity:
+    get:
+      operationId: getActivity
+      tags: [activity]
+      summary: Get recent activity feed
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Activity items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityItem"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    # ── USER ───────────────────────────────────────────────────────────────────
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        clerkId:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        avatarUrl:
+          type: string
+        bio:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, clerkId, email]
+
+    UpdateUserBody:
+      type: object
+      properties:
+        name:
+          type: string
+        bio:
+          type: string
+        avatarUrl:
+          type: string
+
+    # ── WORKSPACE ──────────────────────────────────────────────────────────────
+    Workspace:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        iconEmoji:
+          type: string
+        coverUrl:
+          type: string
+        ownerId:
+          type: string
+        plan:
+          type: string
+          enum: [free, pro, team]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, name, slug, ownerId]
+
+    CreateWorkspaceBody:
+      type: object
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        iconEmoji:
+          type: string
+      required: [name]
+
+    UpdateWorkspaceBody:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        iconEmoji:
+          type: string
+        coverUrl:
+          type: string
+
+    WorkspaceStats:
+      type: object
+      properties:
+        pageCount:
+          type: integer
+        databaseCount:
+          type: integer
+        tagCount:
+          type: integer
+        aiInteractionCount:
+          type: integer
+        linkCount:
+          type: integer
+        activeMemoryCount:
+          type: integer
+      required: [pageCount, databaseCount, tagCount, aiInteractionCount, linkCount, activeMemoryCount]
+
+    # ── PAGE ───────────────────────────────────────────────────────────────────
+    Page:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        slug:
+          type: string
+        type:
+          type: string
+          enum: [page, database, wiki, project, daily, canvas]
+        icon:
+          type: string
+        coverUrl:
+          type: string
+        parentId:
+          type: string
+        workspaceId:
+          type: string
+        authorId:
+          type: string
+        isPublished:
+          type: boolean
+        isFavorite:
+          type: boolean
+        isArchived:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+        excerpt:
+          type: string
+        wordCount:
+          type: integer
+        linkCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, title, type, workspaceId, authorId]
+
+    CreatePageBody:
+      type: object
+      properties:
+        title:
+          type: string
+        type:
+          type: string
+          enum: [page, database, wiki, project, daily, canvas]
+          default: page
+        parentId:
+          type: string
+        icon:
+          type: string
+        coverUrl:
+          type: string
+        templateId:
+          type: string
+      required: [title]
+
+    UpdatePageBody:
+      type: object
+      properties:
+        title:
+          type: string
+        icon:
+          type: string
+        coverUrl:
+          type: string
+        parentId:
+          type: string
+        isPublished:
+          type: boolean
+        isFavorite:
+          type: boolean
+        isArchived:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+
+    PageTreeNode:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+        icon:
+          type: string
+        parentId:
+          type: string
+        isFavorite:
+          type: boolean
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/PageTreeNode"
+      required: [id, title, type]
+
+    PageContent:
+      type: object
+      properties:
+        pageId:
+          type: string
+        content:
+          type: object
+          description: TipTap JSON document
+          additionalProperties: true
+        updatedAt:
+          type: string
+          format: date-time
+      required: [pageId, content]
+
+    SavePageContentBody:
+      type: object
+      properties:
+        content:
+          type: object
+          additionalProperties: true
+      required: [content]
+
+    # ── GRAPH ─────────────────────────────────────────────────────────────────
+    GraphData:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphEdge"
+      required: [nodes, edges]
+
+    GraphNode:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        type:
+          type: string
+        icon:
+          type: string
+        linkCount:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, label, type]
+
+    GraphEdge:
+      type: object
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        target:
+          type: string
+        label:
+          type: string
+      required: [id, source, target]
+
+    # ── BLOCK ─────────────────────────────────────────────────────────────────
+    Block:
+      type: object
+      properties:
+        id:
+          type: string
+        pageId:
+          type: string
+        type:
+          type: string
+        content:
+          type: object
+          additionalProperties: true
+        order:
+          type: integer
+        parentId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, pageId, type, content, order]
+
+    CreateBlockBody:
+      type: object
+      properties:
+        type:
+          type: string
+        content:
+          type: object
+          additionalProperties: true
+        order:
+          type: integer
+        parentId:
+          type: string
+      required: [type, content]
+
+    # ── AI PROVIDER ────────────────────────────────────────────────────────────
+    AiProvider:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        provider:
+          type: string
+        baseUrl:
+          type: string
+        model:
+          type: string
+        authType:
+          type: string
+          enum: [api_key, session_cookie, oauth]
+        isActive:
+          type: boolean
+        isDefault:
+          type: boolean
+        capabilities:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, provider, authType, isActive]
+
+    CreateAiProviderBody:
+      type: object
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        baseUrl:
+          type: string
+        model:
+          type: string
+        authType:
+          type: string
+          enum: [api_key, session_cookie, oauth]
+        apiKey:
+          type: string
+        sessionCookie:
+          type: string
+        isDefault:
+          type: boolean
+      required: [name, provider, authType]
+
+    UpdateAiProviderBody:
+      type: object
+      properties:
+        name:
+          type: string
+        model:
+          type: string
+        apiKey:
+          type: string
+        sessionCookie:
+          type: string
+        isActive:
+          type: boolean
+        isDefault:
+          type: boolean
+
+    AiProviderCatalogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        baseUrl:
+          type: string
+        authTypes:
+          type: array
+          items:
+            type: string
+        defaultModels:
+          type: array
+          items:
+            type: string
+        supportsStreaming:
+          type: boolean
+        isOpenAiCompatible:
+          type: boolean
+        category:
+          type: string
+          enum: [cloud, local, session]
+        logoUrl:
+          type: string
+      required: [id, name, baseUrl, authTypes, defaultModels]
+
+    AiProviderTestResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        latencyMs:
+          type: integer
+        modelInfo:
+          type: object
+          additionalProperties: true
+      required: [success, message]
+
+    # ── AI CHAT ────────────────────────────────────────────────────────────────
+    AiChatBody:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiMessage"
+        providerId:
+          type: string
+        pageId:
+          type: string
+        workspaceId:
+          type: string
+        useMemory:
+          type: boolean
+          default: true
+        useRag:
+          type: boolean
+          default: false
+      required: [messages]
+
+    AiMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+      required: [role, content]
+
+    AiChatResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        content:
+          type: string
+        role:
+          type: string
+        providerId:
+          type: string
+        tokensUsed:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, content, role]
+
+    AiGenerateBody:
+      type: object
+      properties:
+        prompt:
+          type: string
+        pageId:
+          type: string
+        type:
+          type: string
+          enum: [continue, summarize, rewrite, translate, fix_grammar, make_shorter, make_longer, explain, action_items, create_page]
+        providerId:
+          type: string
+        context:
+          type: string
+      required: [prompt, type]
+
+    AiGenerateResponse:
+      type: object
+      properties:
+        content:
+          type: string
+        type:
+          type: string
+        tokensUsed:
+          type: integer
+      required: [content, type]
+
+    AiConversation:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        pageId:
+          type: string
+        messageCount:
+          type: integer
+        lastMessage:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, title, messageCount]
+
+    # ── MEMORY ────────────────────────────────────────────────────────────────
+    Memory:
+      type: object
+      properties:
+        id:
+          type: string
+        content:
+          type: string
+        type:
+          type: string
+          enum: [short_term, long_term, skill, preference]
+        source:
+          type: string
+        importance:
+          type: integer
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, content, type]
+
+    CreateMemoryBody:
+      type: object
+      properties:
+        content:
+          type: string
+        type:
+          type: string
+          enum: [short_term, long_term, skill, preference]
+        source:
+          type: string
+        importance:
+          type: integer
+      required: [content, type]
+
+    MemorySearchBody:
+      type: object
+      properties:
+        query:
+          type: string
+        limit:
+          type: integer
+          default: 10
+      required: [query]
+
+    # ── SKILL ─────────────────────────────────────────────────────────────────
+    Skill:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        prompt:
+          type: string
+        isBuiltIn:
+          type: boolean
+        icon:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, description, category, isBuiltIn]
+
+    CreateSkillBody:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        prompt:
+          type: string
+        icon:
+          type: string
+      required: [name, description, category, prompt]
+
+    RunSkillBody:
+      type: object
+      properties:
+        input:
+          type: string
+        pageId:
+          type: string
+        providerId:
+          type: string
+      required: [input]
+
+    SkillRunResult:
+      type: object
+      properties:
+        output:
+          type: string
+        skillId:
+          type: string
+        tokensUsed:
+          type: integer
+        executionMs:
+          type: integer
+      required: [output, skillId]
+
+    # ── DATABASE ──────────────────────────────────────────────────────────────
+    Database:
+      type: object
+      properties:
+        id:
+          type: string
+        pageId:
+          type: string
+        name:
+          type: string
+        defaultView:
+          type: string
+          enum: [table, kanban, calendar, gallery, list]
+        properties:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatabaseProperty"
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, pageId, name, defaultView, properties]
+
+    DatabaseProperty:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [text, number, select, multi_select, date, checkbox, url, email, phone, relation, formula, rollup, person, file, created_time, updated_time]
+        options:
+          type: object
+          additionalProperties: true
+        order:
+          type: integer
+      required: [id, name, type, order]
+
+    UpdateDatabaseBody:
+      type: object
+      properties:
+        name:
+          type: string
+        defaultView:
+          type: string
+          enum: [table, kanban, calendar, gallery, list]
+        properties:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatabaseProperty"
+
+    DatabaseRow:
+      type: object
+      properties:
+        id:
+          type: string
+        databaseId:
+          type: string
+        properties:
+          type: object
+          additionalProperties: true
+        order:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, databaseId, properties]
+
+    DatabaseRowsResponse:
+      type: object
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatabaseRow"
+        total:
+          type: integer
+        grouped:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/DatabaseRow"
+      required: [rows, total]
+
+    CreateDatabaseRowBody:
+      type: object
+      properties:
+        properties:
+          type: object
+          additionalProperties: true
+      required: [properties]
+
+    UpdateDatabaseRowBody:
+      type: object
+      properties:
+        properties:
+          type: object
+          additionalProperties: true
+      required: [properties]
+
+    # ── SEARCH ────────────────────────────────────────────────────────────────
+    SearchResults:
+      type: object
+      properties:
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+        total:
+          type: integer
+        query:
+          type: string
+      required: [pages, total, query]
+
+    SearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [page, block, database]
+        title:
+          type: string
+        excerpt:
+          type: string
+        icon:
+          type: string
+        workspaceId:
+          type: string
+        parentId:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        score:
+          type: number
+      required: [id, type, title, workspaceId]
+
+    # ── TAG ───────────────────────────────────────────────────────────────────
+    Tag:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        color:
+          type: string
+        pageCount:
+          type: integer
+      required: [id, name, pageCount]
+
+    # ── TEMPLATE ──────────────────────────────────────────────────────────────
+    Template:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        icon:
+          type: string
+        previewUrl:
+          type: string
+        isBuiltIn:
+          type: boolean
+        pageType:
+          type: string
+      required: [id, name, description, category, isBuiltIn]
+
+    # ── ACTIVITY ──────────────────────────────────────────────────────────────
+    ActivityItem:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [page_created, page_updated, page_deleted, database_row_added, ai_chat, memory_created]
+        userId:
+          type: string
+        pageId:
+          type: string
+        pageName:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, type, userId, description, createdAt]
