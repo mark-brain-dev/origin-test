@@ -5,7 +5,7 @@ export type ActiveView =
   | "home" | "page" | "settings" | "database" | "ai"
   | "agents" | "marketplace" | "connections" | "library"
   | "tasks" | "trash" | "chat" | "meetings" | "import"
-  | "teamspaces" | "people";
+  | "teamspaces" | "people" | "inbox";
 
 interface AppState {
   currentWorkspaceId: string | null;

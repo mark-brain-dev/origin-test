@@ -53,6 +53,7 @@ function App() {
             <Route path="/trash" component={AppShell} />
             <Route path="/meetings" component={AppShell} />
             <Route path="/connections" component={AppShell} />
+            <Route path="/inbox" component={AppShell} />
             <Route component={NotFound} />
           </Switch>
         </WouterRouter>

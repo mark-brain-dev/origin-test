@@ -202,6 +202,9 @@ export default function Sidebar() {
         <div className="px-2 py-1.5">
           <div className="text-[11px] font-medium text-muted-foreground/40 px-1 py-1 uppercase tracking-wider">Nexus apps</div>
           <div className="space-y-0.5">
+            <SidebarItem icon={<Inbox className="h-4 w-4" />} label="Inbox"
+              active={activeView === "inbox"}
+              onClick={() => goTo("inbox", "/inbox")} />
             <SidebarItem icon={<Library className="h-4 w-4" />} label="Library"
               active={activeView === "library"}
               onClick={() => goTo("library", "/library")} />

@@ -18,6 +18,7 @@ import MeetingsView from "@/components/meetings/MeetingsView";
 import TasksView from "@/components/tasks/TasksView";
 import LibraryView from "@/components/library/LibraryView";
 import TrashView from "@/components/trash/TrashView";
+import GmailInboxView from "@/components/inbox/GmailInboxView";
 
 export default function AppShell() {
   const params = useParams<{ pageId?: string; section?: string; databaseId?: string }>();
@@ -54,6 +55,7 @@ export default function AppShell() {
     else if (location.startsWith("/trash")) setActiveView("trash");
     else if (location.startsWith("/meetings")) setActiveView("meetings");
     else if (location.startsWith("/connections")) setActiveView("connections");
+    else if (location.startsWith("/inbox")) setActiveView("inbox");
     else if (location === "/" || location === "") {
       if (activeView === "page") {
         // keep showing page if we navigated back
@@ -84,6 +86,7 @@ export default function AppShell() {
     if (activeView === "trash") return <TrashView />;
     if (activeView === "meetings") return <MeetingsView />;
     if (activeView === "connections") return <MarketplacePage />;
+    if (activeView === "inbox") return <GmailInboxView />;
     return <EmptyState workspaceId={currentWorkspaceId || ""} />;
   }
 

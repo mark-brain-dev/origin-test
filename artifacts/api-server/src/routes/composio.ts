@@ -768,6 +768,124 @@ router.get("/calendar/events", async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/composio/gmail/inbox — fetch emails from Gmail via Composio
+router.get("/gmail/inbox", async (req: Request, res: Response) => {
+  const entityId = (req.query.entityId as string) || "default";
+  const maxResults = parseInt((req.query.maxResults as string) || "25", 10);
+  const query = (req.query.q as string) || "in:inbox";
+  const pageToken = req.query.pageToken as string | undefined;
+
+  try {
+    // Find active Gmail connection
+    const lookup = await v3(`/connected_accounts?user_uuid=${entityId}&toolkit=gmail&status=ACTIVE&limit=5`);
+    if (!lookup.ok) { res.json({ emails: [], connected: false, error: "Could not check connections" }); return; }
+    const ld = await safeJson(lookup);
+    const conn = (ld.items || [])[0];
+    if (!conn) { res.json({ emails: [], connected: false }); return; }
+
+    const connShortId = conn.id;
+    const connUuid = conn.deprecated?.uuid || conn.id;
+
+    // Try action candidates in order
+    const candidates = [
+      { action: "GMAIL_FETCH_EMAILS", input: { max_results: maxResults, query, include_spam_trash: false, ...(pageToken ? { page_token: pageToken } : {}) } },
+      { action: "GMAIL_LIST_EMAILS", input: { max_results: maxResults, query } },
+      { action: "GMAIL_GET_EMAILS", input: { max_results: maxResults, q: query } },
+    ];
+
+    for (const { action, input } of candidates) {
+      // v3 first
+      const r3 = await v3(`/tools/execute/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ arguments: input, version: "latest", connected_account_id: connShortId }),
+      });
+      if (r3.ok) {
+        const d = await safeJson(r3);
+        const emails = normalizeEmails(d);
+        if (emails.length > 0 || d?.data?.messages !== undefined || d?.response_data?.messages !== undefined) {
+          res.json({ emails, connected: true, total: emails.length, action, engine: "v3", nextPageToken: d?.data?.nextPageToken });
+          return;
+        }
+      }
+      // v2 fallback
+      const r2 = await v2(`/actions/${action}/execute`, {
+        method: "POST",
+        body: JSON.stringify({ input, connectedAccountId: connUuid }),
+      });
+      if (r2.ok) {
+        const d = await safeJson(r2);
+        const emails = normalizeEmails(d);
+        if (emails.length > 0) {
+          res.json({ emails, connected: true, total: emails.length, action, engine: "v2" });
+          return;
+        }
+      }
+    }
+
+    res.json({ emails: [], connected: true, total: 0, warning: "No emails found" });
+  } catch (err: any) {
+    res.json({ emails: [], connected: false, error: err.message });
+  }
+});
+
+// POST /api/composio/gmail/send — send an email via Gmail
+router.post("/gmail/send", async (req: Request, res: Response) => {
+  const { entityId = "default", to, subject, body, cc, bcc } = req.body;
+  if (!to || !subject || !body) {
+    res.status(400).json({ error: "to, subject, and body are required" }); return;
+  }
+  try {
+    const lookup = await v3(`/connected_accounts?user_uuid=${entityId}&toolkit=gmail&status=ACTIVE&limit=5`);
+    if (!lookup.ok) { res.status(503).json({ error: "Could not check Gmail connection" }); return; }
+    const ld = await safeJson(lookup);
+    const conn = (ld.items || [])[0];
+    if (!conn) { res.status(400).json({ error: "No active Gmail connection", code: "NO_ACTIVE_CONNECTION", appName: "gmail" }); return; }
+
+    const connShortId = conn.id;
+    const connUuid = conn.deprecated?.uuid || conn.id;
+    const input: Record<string, unknown> = { recipient_email: to, subject, body, ...(cc ? { cc } : {}), ...(bcc ? { bcc } : {}) };
+
+    const r3 = await v3(`/tools/execute/GMAIL_SEND_EMAIL`, {
+      method: "POST",
+      body: JSON.stringify({ arguments: input, version: "latest", connected_account_id: connShortId }),
+    });
+    if (r3.ok) { const d = await safeJson(r3); res.json({ success: true, data: d, engine: "v3" }); return; }
+
+    const r2 = await v2(`/actions/GMAIL_SEND_EMAIL/execute`, {
+      method: "POST",
+      body: JSON.stringify({ input: { ...input, recipient_email: to }, connectedAccountId: connUuid }),
+    });
+    if (r2.ok) { const d = await safeJson(r2); res.json({ success: true, data: d, engine: "v2" }); return; }
+
+    const e = await safeJson(r2);
+    res.status(400).json({ error: e.message || "Failed to send email" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Helper — normalize email objects from different Composio action response shapes
+function normalizeEmails(raw: any): Array<{
+  id: string; threadId: string; subject: string; from: string; to: string;
+  snippet: string; body: string; date: string; read: boolean; starred: boolean; labels: string[];
+}> {
+  const data = raw?.data ?? raw?.response_data ?? raw?.result ?? raw;
+  const messages: any[] = data?.messages ?? data?.emails ?? data?.items ?? (Array.isArray(data) ? data : []);
+  return messages.map((m: any, i: number) => ({
+    id: m.id || m.messageId || `msg-${i}`,
+    threadId: m.threadId || m.thread_id || m.id || `thread-${i}`,
+    subject: m.subject || m.Subject || "(no subject)",
+    from: m.from || m.From || m.sender || "",
+    to: m.to || m.To || m.recipient || "",
+    snippet: m.snippet || m.preview || m.body?.slice?.(0, 120) || "",
+    body: m.body || m.htmlBody || m.textBody || m.content || m.snippet || "",
+    date: m.date || m.internalDate || m.receivedAt || new Date().toISOString(),
+    read: m.read ?? m.isRead ?? !m.labelIds?.includes?.("UNREAD") ?? true,
+    starred: m.starred ?? m.isStarred ?? m.labelIds?.includes?.("STARRED") ?? false,
+    labels: m.labelIds || m.labels || [],
+  }));
+}
+
 // ─── Agent Context ────────────────────────────────────────────────────────────
 
 // GET /api/composio/agent-context — tool availability context for AI system prompts
