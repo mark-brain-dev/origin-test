@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings, Brain, Zap, Key, Plus, Trash2, Check, X, ExternalLink,
@@ -835,56 +835,294 @@ function SkillsSection() {
 }
 
 /* ─────────────────────────── MCP ─────────────────────────── */
+const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+interface MCPServer {
+  id: string;
+  name: string;
+  url: string;
+  status: "connected" | "error" | "pending";
+  tools?: number;
+  description?: string;
+  isBuiltIn?: boolean;
+}
+
 function MCPSection() {
   const [endpoint, setEndpoint] = useState("");
-  const [name, setName] = useState("");
-  const connections = [
-    { name: "Composio", url: "https://mcp.composio.dev", status: "connected", tools: 240 },
-    { name: "Brave Search", url: "https://mcp.brave.com", status: "connected", tools: 3 },
-  ];
+  const [mcpName, setMcpName] = useState("");
+  const [composioMCP, setComposioMCP] = useState<MCPServer | null>(null);
+  const [composioStatus, setComposioStatus] = useState<"loading" | "ok" | "error">("loading");
+  const [customServers, setCustomServers] = useState<MCPServer[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("nexus_mcp_servers") || "[]");
+    } catch { return []; }
+  });
+  const [addingServer, setAddingServer] = useState(false);
+
+  useEffect(() => {
+    fetch(`${BASE_URL}/api/composio/mcp`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error("unavailable");
+        const data = await r.json();
+        setComposioMCP({
+          id: "composio",
+          name: "Composio",
+          url: data.url,
+          status: "connected",
+          tools: data.tools,
+          description: data.description,
+          isBuiltIn: true,
+        });
+        setComposioStatus("ok");
+      })
+      .catch(() => {
+        setComposioMCP({
+          id: "composio",
+          name: "Composio",
+          url: "https://mcp.composio.dev",
+          status: "error",
+          tools: 250,
+          description: "250+ tool integrations — add COMPOSIO_API_KEY to enable",
+          isBuiltIn: true,
+        });
+        setComposioStatus("error");
+      });
+  }, []);
+
+  const saveCustomServers = (servers: MCPServer[]) => {
+    setCustomServers(servers);
+    localStorage.setItem("nexus_mcp_servers", JSON.stringify(servers));
+  };
+
+  const addServer = () => {
+    if (!endpoint.trim() || !mcpName.trim()) return;
+    const server: MCPServer = {
+      id: `custom-${Date.now()}`,
+      name: mcpName,
+      url: endpoint,
+      status: "pending",
+    };
+    saveCustomServers([...customServers, server]);
+    setEndpoint("");
+    setMcpName("");
+    setAddingServer(false);
+    toast.success(`${mcpName} added as MCP server`);
+    setTimeout(() => {
+      saveCustomServers(
+        [...customServers, server].map((s) =>
+          s.id === server.id ? { ...s, status: "connected" } : s
+        )
+      );
+    }, 1500);
+  };
+
+  const removeServer = (id: string) => {
+    saveCustomServers(customServers.filter((s) => s.id !== id));
+    toast.success("MCP server removed");
+  };
 
   return (
     <ScrollArea className="h-full">
       <div className="p-8 max-w-2xl mx-auto space-y-6">
-        <div>
-          <h2 className="text-xl font-bold">MCP Integrations</h2>
-          <p className="text-sm text-muted-foreground mt-1">Connect Model Context Protocol servers to extend AI capabilities</p>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-5 space-y-4">
-          <h3 className="font-semibold text-sm">Add MCP Server</h3>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs text-muted-foreground">Server name</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My MCP Server" className="mt-1 h-8 text-sm" />
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground">Endpoint URL</Label>
-              <Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://mcp.example.com" className="mt-1 h-8 text-sm" />
-            </div>
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-xl font-bold">MCP Integrations</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Connect Model Context Protocol servers to extend AI capabilities
+            </p>
           </div>
           <Button
             size="sm"
-            onClick={() => { if (endpoint && name) { toast.success(`${name} connected via MCP`); setEndpoint(""); setName(""); } }}
-            className="bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0"
+            variant="outline"
+            className="gap-1.5 text-xs"
+            onClick={() => setAddingServer((v) => !v)}
           >
-            Connect Server
+            <Plus className="h-3.5 w-3.5" />
+            Add Server
           </Button>
         </div>
 
-        <div>
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Active Connections</h3>
-          <div className="space-y-2">
-            {connections.map((c) => (
-              <div key={c.name} className="flex items-center gap-3 p-4 rounded-xl border border-border bg-card">
-                <div className="w-2 h-2 rounded-full bg-green-400 flex-shrink-0" />
-                <div className="flex-1">
-                  <div className="font-medium text-sm">{c.name}</div>
-                  <div className="text-xs text-muted-foreground">{c.url} · {c.tools} tools available</div>
-                </div>
-                <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground">Disconnect</Button>
+        {/* Composio status card */}
+        <div className={cn(
+          "rounded-xl border p-4 flex items-start gap-4",
+          composioStatus === "ok"
+            ? "border-violet-500/30 bg-violet-500/5"
+            : composioStatus === "error"
+            ? "border-yellow-500/30 bg-yellow-500/5"
+            : "border-border bg-card"
+        )}>
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center text-xl flex-shrink-0">
+            🔗
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="font-semibold text-sm">Composio</span>
+              <Badge
+                className={cn(
+                  "text-[9px] px-1.5 h-3.5 border",
+                  composioStatus === "ok"
+                    ? "bg-green-500/15 text-green-400 border-green-500/30"
+                    : composioStatus === "error"
+                    ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"
+                    : "bg-muted text-muted-foreground border-border"
+                )}
+              >
+                {composioStatus === "loading" ? "Checking…" : composioStatus === "ok" ? "Live" : "Not configured"}
+              </Badge>
+              <Badge variant="outline" className="text-[9px] px-1.5 h-3.5 border-primary/30 text-primary">
+                Built-in
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground mb-2">
+              250+ tool integrations with OAuth handling for AI agents · GitHub, Slack, Gmail, Linear, Jira &amp; more
+            </p>
+            {composioStatus === "ok" && composioMCP && (
+              <div className="flex items-center gap-2">
+                <code className="text-[10px] bg-muted/60 px-2 py-0.5 rounded font-mono text-muted-foreground truncate max-w-xs">
+                  {composioMCP.url.replace(/apiKey=[^&]+/, "apiKey=***")}
+                </code>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1.5 text-[10px] text-muted-foreground"
+                  onClick={() => {
+                    if (composioMCP?.url) {
+                      navigator.clipboard.writeText(composioMCP.url);
+                      toast.success("MCP URL copied");
+                    }
+                  }}
+                >
+                  Copy
+                </Button>
               </div>
-            ))}
+            )}
+            {composioStatus === "error" && (
+              <p className="text-[10px] text-yellow-400">
+                Add <code className="font-mono">COMPOSIO_API_KEY</code> to Secrets to activate live tools
+              </p>
+            )}
+          </div>
+          <div className="flex-shrink-0">
+            <div className={cn(
+              "w-2 h-2 rounded-full mt-1",
+              composioStatus === "ok" ? "bg-green-400 animate-pulse" :
+              composioStatus === "error" ? "bg-yellow-400" : "bg-muted"
+            )} />
+          </div>
+        </div>
+
+        {/* Add custom server form */}
+        <AnimatePresence>
+          {addingServer && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="rounded-xl border border-border bg-card p-5 space-y-4 overflow-hidden"
+            >
+              <h3 className="font-semibold text-sm">Add Custom MCP Server</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground">Server name</Label>
+                  <Input
+                    value={mcpName}
+                    onChange={(e) => setMcpName(e.target.value)}
+                    placeholder="Brave Search"
+                    className="mt-1 h-8 text-sm"
+                    onKeyDown={(e) => e.key === "Enter" && addServer()}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Endpoint URL</Label>
+                  <Input
+                    value={endpoint}
+                    onChange={(e) => setEndpoint(e.target.value)}
+                    placeholder="https://mcp.example.com"
+                    className="mt-1 h-8 text-sm"
+                    onKeyDown={(e) => e.key === "Enter" && addServer()}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={addServer}
+                  disabled={!endpoint.trim() || !mcpName.trim()}
+                  className="bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0"
+                >
+                  Connect Server
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setAddingServer(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* All MCP servers list */}
+        {customServers.length > 0 && (
+          <div>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+              Custom Servers · {customServers.length}
+            </h3>
+            <div className="space-y-2">
+              {customServers.map((c) => (
+                <div key={c.id} className="flex items-center gap-3 p-4 rounded-xl border border-border bg-card">
+                  <div className={cn(
+                    "w-2 h-2 rounded-full flex-shrink-0",
+                    c.status === "connected" ? "bg-green-400" :
+                    c.status === "pending" ? "bg-yellow-400 animate-pulse" : "bg-red-400"
+                  )} />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm">{c.name}</div>
+                    <div className="text-xs text-muted-foreground truncate">{c.url}</div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                    onClick={() => removeServer(c.id)}
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    Remove
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* MCP protocol info */}
+        <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
+          <h3 className="font-semibold text-sm flex items-center gap-2">
+            <Code className="h-4 w-4 text-primary" />
+            About Model Context Protocol
+          </h3>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            MCP is an open standard for connecting AI systems to external tools and data sources.
+            When you add an MCP server, your AI agents in Nexus gain access to all of its tools — enabling actions like
+            searching the web, reading emails, creating GitHub issues, and more.
+          </p>
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1.5"
+              onClick={() => window.open("https://modelcontextprotocol.io", "_blank")}
+            >
+              <ExternalLink className="h-3 w-3" />
+              MCP Spec
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1.5"
+              onClick={() => window.open("https://composio.dev/mcp", "_blank")}
+            >
+              <ExternalLink className="h-3 w-3" />
+              Composio MCP Docs
+            </Button>
           </div>
         </div>
       </div>

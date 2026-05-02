@@ -2,7 +2,7 @@
 
 ## Overview
 
-pnpm workspace monorepo using TypeScript. Full-stack "Nexus OS" desktop app — Notion + Obsidian + ClickUp + AI-native workspace.
+pnpm workspace monorepo using TypeScript. Full-stack "Nexus OS" desktop app — Notion + Obsidian + ClickUp + AI-native workspace with full Composio v3 API integration (1,033 connectors).
 
 ## Stack
 
@@ -31,7 +31,14 @@ pnpm workspace monorepo using TypeScript. Full-stack "Nexus OS" desktop app — 
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- `pnpm --filter @workspace/api-server run dev` — run API server locally
+
+## Port Conflict Fix
+
+`nexus-hub-clone` workflows may steal ports 8080/5173. Before restarting main workflows:
+```
+fuser -k 8080/tcp 5173/tcp 2>/dev/null; sleep 2
+```
+Restart order: ports → `artifacts/api-server: API Server` → `artifacts/nexus: web`
 
 ## Nexus OS Features
 
@@ -43,14 +50,15 @@ pnpm workspace monorepo using TypeScript. Full-stack "Nexus OS" desktop app — 
 - **Tasks View** — Task list with priority, status, due dates, filtering, sorting
 - **Library View** — Recent pages grid/list, collections, 8+ templates
 - **Trash View** — Deleted pages with restore/permanent delete
-- **AI Agents Panel** — 5 agents (Research, Writing, Data, Automation, Nexus Assistant) with REAL AI chat via `/api/ai/chat`
-- **Marketplace** — Connector marketplace with categories
-- **Settings** — Providers (25+ AI), Memory, Skills, MCP, Appearance, Import, People, Security
+- **AI Agents Panel** — 5 agents (Research, Writing, Data, Automation, Nexus Assistant) with REAL AI chat via `/api/ai/chat`; Chat/Tools toggle; Composio tools browser
+- **Marketplace** — Live Composio app catalog (1,033 apps), real OAuth connection flow, disconnect support
+- **Settings** — Providers (25+ AI), Memory, Skills, MCP (live Composio MCP URL), Appearance, Import, People, Security
 
 ### AI & Integration
 - 25+ AI providers (OpenAI, Anthropic, Gemini, Groq, Mistral, Ollama, etc.)
 - AI memory system (short/long-term, skills, preferences) stored in DB
-- MCP Protocol connections (Composio, Brave Search, etc.)
+- **Composio v3 full integration** — 1,033 connectors, OAuth, actions, triggers, MCP
+- MCP Protocol: live Composio MCP URL + custom server management (localStorage)
 - Real AI chat endpoint at `/api/ai/chat`
 - AgentsPanel connected to real AI with full conversation history
 
@@ -64,6 +72,23 @@ pnpm workspace monorepo using TypeScript. Full-stack "Nexus OS" desktop app — 
 - `GET /api/ai/providers` — connected providers + 25-provider catalog
 - `GET /api/search` — full-text page search
 - `GET /api/databases/:id/rows` — database rows
+- `GET /api/composio/status` — Composio account status
+- `GET /api/composio/apps` — all 1,033 Composio apps
+- `GET /api/composio/connections` — user OAuth connections
+- `POST /api/composio/connections/initiate` — start OAuth flow
+- `DELETE /api/composio/connections/:id` — disconnect app
+- `GET /api/composio/integrations` — list integrations
+- `GET /api/composio/actions` — browse Composio actions
+- `POST /api/composio/execute` — execute a Composio action
+- `GET /api/composio/triggers` — list triggers
+- `GET /api/composio/mcp` — get Composio MCP server config
+
+### Composio Config
+- **Base URL**: `https://backend.composio.dev/api/v1`
+- **Auth**: `x-api-key` header using `COMPOSIO_API_KEY` env secret
+- **MCP URL**: `https://mcp.composio.dev?apiKey={KEY}&entityId={entityId}`
+- **Account**: `time.plixerofficial@gmail.com` (free plan)
+- **SDK**: `composio-core@0.5.39` installed in api-server
 
 ## DB Schema Tables
 
@@ -81,6 +106,6 @@ pnpm workspace monorepo using TypeScript. Full-stack "Nexus OS" desktop app — 
 - **DB migrations** via `pnpm --filter @workspace/db run push` (Drizzle Kit)
 - **Proxy routing**: frontend at `/`, API at `/api` — handled by `.replit-artifact/artifact.toml`
 - **SSE events** at `/api/events` — real-time page invalidation
-- nexus-hub-clone at `/nexus-hub` — legacy, ignore
+- nexus-hub-clone at `/nexus-hub` — legacy, ignore all `nexus-hub-clone/*` workflows
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

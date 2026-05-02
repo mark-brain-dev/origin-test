@@ -1,11 +1,12 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bot, Plus, Play, Square, RefreshCw, Trash2, Settings2,
   Sparkles, Brain, Zap, Globe, Code, FileText, Database,
   ChevronRight, CheckCircle, Clock, AlertCircle, Cpu,
   MessageSquare, Layers, Link, Terminal, BookOpen, Send,
-  User, Loader2, ChevronDown, Star,
+  User, Loader2, ChevronDown, Star, Wrench, Link2,
+  ChevronLeft, Search, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -117,6 +118,21 @@ const STATUS_CONFIG = {
   error: { label: "Error", color: "text-red-400", bg: "bg-red-500/10", icon: <AlertCircle className="h-3 w-3" /> },
 };
 
+interface ComposioConnection {
+  id: string;
+  appName: string;
+  status: string;
+  entityId: string;
+}
+
+interface ComposioAction {
+  name: string;
+  displayName?: string;
+  description?: string;
+  appName?: string;
+  tags?: string[];
+}
+
 export default function AgentsPanel() {
   const { currentWorkspaceId } = useAppStore();
   const [agents, setAgents] = useState<Agent[]>(DEFAULT_AGENTS);
@@ -127,8 +143,39 @@ export default function AgentsPanel() {
   const [prompt, setPrompt] = useState("");
   const [conversations, setConversations] = useState<Record<string, ChatMessage[]>>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [activeView, setActiveView] = useState<"chat" | "tools">("chat");
+  const [composioConnections, setComposioConnections] = useState<ComposioConnection[]>([]);
+  const [composioActions, setComposioActions] = useState<ComposioAction[]>([]);
+  const [toolsLoading, setToolsLoading] = useState(false);
+  const [selectedApp, setSelectedApp] = useState<string | null>(null);
+  const [toolSearch, setToolSearch] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const fetchComposioData = useCallback(async () => {
+    setToolsLoading(true);
+    try {
+      const [connRes, actRes] = await Promise.all([
+        fetch(`${BASE}/api/composio/connections?entityId=default`),
+        fetch(`${BASE}/api/composio/actions?limit=50&filterImportantActions=true`),
+      ]);
+      if (connRes.ok) {
+        const data = await connRes.json();
+        setComposioConnections(data.items || data || []);
+      }
+      if (actRes.ok) {
+        const data = await actRes.json();
+        setComposioActions(data.items || data || []);
+      }
+    } catch { /* silently ignore */ }
+    setToolsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (activeView === "tools") {
+      fetchComposioData();
+    }
+  }, [activeView, fetchComposioData]);
 
   const { data: providers = [] } = useListAiProviders() as { data: any[] };
   const defaultProvider = providers.find((p: any) => p.isDefault) || providers[0];
@@ -349,12 +396,44 @@ export default function AgentsPanel() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {defaultProvider && (
+                {/* Chat / Tools toggle */}
+                <div className="flex items-center gap-0.5 bg-muted/60 rounded-lg p-0.5">
+                  <button
+                    onClick={() => setActiveView("chat")}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all",
+                      activeView === "chat"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <MessageSquare className="h-3 w-3" />
+                    Chat
+                  </button>
+                  <button
+                    onClick={() => setActiveView("tools")}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all",
+                      activeView === "tools"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <Wrench className="h-3 w-3" />
+                    Tools
+                    {composioConnections.length > 0 && (
+                      <span className="ml-0.5 bg-primary text-primary-foreground text-[9px] px-1 rounded-full">
+                        {composioConnections.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+                {defaultProvider && activeView === "chat" && (
                   <div className="text-xs text-muted-foreground/60 bg-muted/40 px-2 py-1 rounded-lg">
                     via {defaultProvider.name}
                   </div>
                 )}
-                {currentMessages.length > 0 && (
+                {currentMessages.length > 0 && activeView === "chat" && (
                   <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground" onClick={clearConversation}>
                     <Trash2 className="h-3 w-3 mr-1" /> Clear
                   </Button>
@@ -362,21 +441,201 @@ export default function AgentsPanel() {
               </div>
             </div>
 
-            {/* Capabilities bar */}
-            <div className="flex items-center gap-1.5 px-5 py-2 border-b border-border/20 overflow-x-auto scrollbar-none">
-              {selectedAgent.capabilities.map(cap => (
-                <div key={cap} className="flex items-center gap-1 px-2 py-0.5 bg-muted/40 rounded-full text-[10px] text-muted-foreground flex-shrink-0">
-                  {CAPABILITY_ICONS[cap]}
-                  {cap.replace(/-/g, " ")}
+            {/* Capabilities bar (only in chat mode) */}
+            {activeView === "chat" && (
+              <div className="flex items-center gap-1.5 px-5 py-2 border-b border-border/20 overflow-x-auto scrollbar-none">
+                {selectedAgent.capabilities.map(cap => (
+                  <div key={cap} className="flex items-center gap-1 px-2 py-0.5 bg-muted/40 rounded-full text-[10px] text-muted-foreground flex-shrink-0">
+                    {CAPABILITY_ICONS[cap]}
+                    {cap.replace(/-/g, " ")}
+                  </div>
+                ))}
+                {composioConnections.filter(c => c.status === "ACTIVE").length > 0 && (
+                  <div className="flex items-center gap-1 px-2 py-0.5 bg-violet-500/10 rounded-full text-[10px] text-violet-400 flex-shrink-0 border border-violet-500/20">
+                    <Link2 className="h-3 w-3" />
+                    {composioConnections.filter(c => c.status === "ACTIVE").length} composio tool{composioConnections.filter(c => c.status === "ACTIVE").length !== 1 ? "s" : ""}
+                  </div>
+                )}
+                <div className="text-[10px] text-muted-foreground/40 ml-2 flex-shrink-0">
+                  · {selectedAgent.totalRuns} runs
                 </div>
-              ))}
-              <div className="text-[10px] text-muted-foreground/40 ml-2 flex-shrink-0">
-                · {selectedAgent.totalRuns} runs
               </div>
-            </div>
+            )}
+
+            {/* Tools panel */}
+            {activeView === "tools" && (
+              <div className="flex-1 overflow-hidden flex flex-col">
+                <div className="px-5 py-3 border-b border-border/20 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-foreground">Composio Tools</p>
+                    <p className="text-[10px] text-muted-foreground">Connect apps to give this agent superpowers</p>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={fetchComposioData} className="h-7 text-xs gap-1 text-muted-foreground">
+                    <RefreshCw className="h-3 w-3" />
+                  </Button>
+                </div>
+                <ScrollArea className="flex-1">
+                  <div className="p-5 space-y-5">
+                    {toolsLoading ? (
+                      <div className="flex items-center justify-center py-12">
+                        <div className="text-center">
+                          <Loader2 className="h-6 w-6 animate-spin text-primary mx-auto mb-2" />
+                          <p className="text-xs text-muted-foreground">Loading Composio tools…</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Connected Apps */}
+                        <div>
+                          <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                            Connected Apps · {composioConnections.filter(c => c.status === "ACTIVE").length}
+                          </h3>
+                          {composioConnections.filter(c => c.status === "ACTIVE").length === 0 ? (
+                            <div className="rounded-xl border border-dashed border-border/60 p-6 text-center">
+                              <Wrench className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+                              <p className="text-xs text-muted-foreground mb-3">No apps connected yet</p>
+                              <p className="text-[10px] text-muted-foreground/60 mb-3">
+                                Connect GitHub, Slack, Gmail and 250+ more tools via Composio
+                              </p>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs gap-1.5"
+                                onClick={() => window.open("/mcp-connections", "_self")}
+                              >
+                                <Link2 className="h-3 w-3" />
+                                Connect Apps
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-2">
+                              {composioConnections
+                                .filter(c => c.status === "ACTIVE")
+                                .map((conn) => (
+                                  <button
+                                    key={conn.id}
+                                    onClick={() => setSelectedApp(
+                                      selectedApp === conn.appName ? null : conn.appName
+                                    )}
+                                    className={cn(
+                                      "flex items-center gap-2.5 p-3 rounded-xl border text-left transition-all",
+                                      selectedApp === conn.appName
+                                        ? "border-primary/40 bg-primary/5"
+                                        : "border-border/60 bg-card hover:border-border"
+                                    )}
+                                  >
+                                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500/20 to-indigo-500/20 flex items-center justify-center text-sm flex-shrink-0">
+                                      {conn.appName?.[0]?.toUpperCase() || "?"}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-xs font-medium text-foreground capitalize truncate">
+                                        {conn.appName}
+                                      </div>
+                                      <div className="flex items-center gap-1 mt-0.5">
+                                        <div className="w-1 h-1 rounded-full bg-green-400" />
+                                        <span className="text-[10px] text-green-400">Active</span>
+                                      </div>
+                                    </div>
+                                  </button>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Available Actions */}
+                        {composioActions.length > 0 && (
+                          <div>
+                            <div className="flex items-center justify-between mb-3">
+                              <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                                Available Actions · {composioActions.filter(a =>
+                                  !selectedApp || a.appName?.toLowerCase() === selectedApp.toLowerCase()
+                                ).filter(a =>
+                                  !toolSearch || (a.displayName || a.name || "").toLowerCase().includes(toolSearch.toLowerCase())
+                                ).length}
+                              </h3>
+                              {selectedApp && (
+                                <button
+                                  onClick={() => setSelectedApp(null)}
+                                  className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5"
+                                >
+                                  <ChevronLeft className="h-3 w-3" />
+                                  All
+                                </button>
+                              )}
+                            </div>
+                            <div className="relative mb-3">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                              <input
+                                value={toolSearch}
+                                onChange={(e) => setToolSearch(e.target.value)}
+                                placeholder="Search actions…"
+                                className="w-full bg-muted/40 rounded-lg pl-7 pr-3 py-1.5 text-xs border border-border/40 focus:border-primary/50 outline-none"
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              {composioActions
+                                .filter(a => !selectedApp || a.appName?.toLowerCase() === selectedApp.toLowerCase())
+                                .filter(a => !toolSearch || (a.displayName || a.name || "").toLowerCase().includes(toolSearch.toLowerCase()))
+                                .slice(0, 30)
+                                .map((action) => (
+                                  <div
+                                    key={action.name}
+                                    className="flex items-start gap-3 p-3 rounded-lg border border-border/40 bg-card hover:border-border/60 transition-colors group"
+                                  >
+                                    <div className="w-6 h-6 rounded-md bg-violet-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                      <Zap className="h-3 w-3 text-violet-400" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-xs font-medium text-foreground truncate">
+                                        {action.displayName || action.name}
+                                      </div>
+                                      {action.description && (
+                                        <div className="text-[10px] text-muted-foreground line-clamp-1 mt-0.5">
+                                          {action.description}
+                                        </div>
+                                      )}
+                                      {action.appName && (
+                                        <div className="text-[9px] text-muted-foreground/50 mt-0.5 font-mono">
+                                          {action.appName}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-6 px-2 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                      onClick={() => {
+                                        const actionText = `Use the ${action.displayName || action.name} action`;
+                                        setPrompt(actionText);
+                                        setActiveView("chat");
+                                        textareaRef.current?.focus();
+                                      }}
+                                    >
+                                      Use
+                                    </Button>
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* No actions state */}
+                        {composioActions.length === 0 && composioConnections.filter(c => c.status === "ACTIVE").length > 0 && (
+                          <div className="rounded-xl border border-border/40 p-4 text-center">
+                            <p className="text-xs text-muted-foreground">
+                              No actions available for connected apps yet
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+            )}
 
             {/* Chat messages */}
-            <ScrollArea className="flex-1 px-5">
+            {activeView === "chat" && (<ScrollArea className="flex-1 px-5">
               <div className="py-4 space-y-4 max-w-3xl mx-auto">
                 {currentMessages.length === 0 && (
                   <div className="py-10 text-center">
@@ -458,10 +717,10 @@ export default function AgentsPanel() {
                 )}
                 <div ref={messagesEndRef} />
               </div>
-            </ScrollArea>
+            </ScrollArea>)}
 
-            {/* Input area */}
-            <div className="px-5 pb-5 pt-3 border-t border-border/20">
+            {/* Input area — only in chat mode */}
+            {activeView === "chat" && <div className="px-5 pb-5 pt-3 border-t border-border/20">
               <div className="max-w-3xl mx-auto">
                 <div className="relative flex items-end gap-2 bg-card border border-border/60 rounded-2xl p-2 focus-within:border-primary/50 transition-colors">
                   <Textarea
@@ -497,7 +756,7 @@ export default function AgentsPanel() {
                   Press Enter to send · Shift+Enter for new line
                 </p>
               </div>
-            </div>
+            </div>}
           </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
