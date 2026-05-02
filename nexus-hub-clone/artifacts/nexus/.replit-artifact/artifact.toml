@@ -1,6 +1,6 @@
 kind = "web"
-previewPath = "/"
-title = "Nexus OS"
+previewPath = "/nexus-hub"
+title = "Nexus OS (Hub)"
 version = "1.0.0"
 id = "artifacts/nexus"
 router = "path"
@@ -11,21 +11,21 @@ version = "1.0.0"
 
 [[services]]
 name = "web"
-paths = [ "/" ]
+paths = ["/nexus-hub"]
 localPort = 18245
 
 [services.development]
 run = "pnpm --filter @workspace/nexus run dev"
 
+[services.env]
+PORT = "18245"
+BASE_PATH = "/nexus-hub"
+
 [services.production]
-build = [ "pnpm", "--filter", "@workspace/nexus", "run", "build" ]
-publicDir = "artifacts/nexus/dist/public"
+build = ["pnpm", "--filter", "@workspace/nexus", "run", "build"]
+publicDir = "nexus-hub-clone/artifacts/nexus/dist/public"
 serve = "static"
 
 [[services.production.rewrites]]
 from = "/*"
 to = "/index.html"
-
-[services.env]
-PORT = "18245"
-BASE_PATH = "/"
