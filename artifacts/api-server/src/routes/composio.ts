@@ -176,71 +176,78 @@ router.get("/connections/:id", async (req, res) => {
 });
 
 // POST /api/composio/connections/initiate
-// Multi-step: find app → create/reuse integration → initiate connection
+// Full v3 API flow: find/create auth_config → create connected_account → return redirectUrl
 router.post("/connections/initiate", async (req, res) => {
-  const { appName, entityId = "default", redirectUri } = req.body;
+  const { appName, entityId = "default" } = req.body;
   if (!appName) { res.status(400).json({ error: "appName is required" }); return; }
 
+  const apiKey = process.env.COMPOSIO_API_KEY;
+  if (!apiKey) { res.status(503).json({ error: "COMPOSIO_API_KEY not configured" }); return; }
+
+  const v3Base = "https://backend.composio.dev/api/v3";
+  const v3Headers = { "x-api-key": apiKey, "Content-Type": "application/json" };
+
+  const v3Get = (path: string) =>
+    fetch(`${v3Base}${path}`, { headers: v3Headers });
+  const v3Post = (path: string, body: Record<string, unknown>) =>
+    fetch(`${v3Base}${path}`, { method: "POST", headers: v3Headers, body: JSON.stringify(body) });
+
   try {
-    // Step 1: Get all apps to find the appId
-    const appsRes = await composioFetch("/apps");
-    if (!appsRes.ok) { res.status(502).json({ error: "Failed to fetch apps list" }); return; }
-    const appsData = await appsRes.json();
-    const app = (appsData.items || []).find(
-      (a: any) => a.key === appName || a.name === appName
-    );
-    if (!app) { res.status(404).json({ error: `App '${appName}' not found in Composio` }); return; }
+    // ── Step 1: Find existing v3 auth_config for this app ─────────────────────
+    let authConfigId: string | null = null;
 
-    // Step 2: Get or create an integration for this app
-    const intListRes = await composioFetch(`/integrations?appName=${appName}&limit=10`);
-    let integrationId: string | null = null;
-
-    if (intListRes.ok) {
-      const intData = await intListRes.json();
-      const existing = (intData.items || []).find(
-        (i: any) => i.appName === appName || i.appKey === appName
+    const acListRes = await v3Get(`/auth_configs?app_name=${encodeURIComponent(appName)}&limit=20`);
+    if (acListRes.ok) {
+      const acData = await acListRes.json().catch(() => ({}));
+      const found = (acData.items || []).find(
+        (ac: any) =>
+          (ac.toolkit?.slug?.toLowerCase() === appName.toLowerCase() ||
+           ac.app_name?.toLowerCase() === appName.toLowerCase()) &&
+          ac.status !== "DISABLED" && !ac.deleted
       );
-      if (existing) integrationId = existing.id;
+      if (found) authConfigId = found.id;  // e.g. "ac_V8jiZteAG4gA"
     }
 
-    if (!integrationId) {
-      // Create a new integration using Composio auth (no user credentials needed)
-      const authScheme = (app.auth_schemes || [])[0] || "OAUTH2";
-      const createBody: Record<string, unknown> = {
-        appId: app.appId || app.key,
-        authScheme,
-        useComposioAuth: true,
-        name: `Nexus ${app.displayName || appName} Integration`,
-      };
-      const createRes = await composioFetch("/integrations", {
-        method: "POST",
-        body: JSON.stringify(createBody),
+    // ── Step 2: Create auth_config if none found ───────────────────────────────
+    if (!authConfigId) {
+      const createAcRes = await v3Post("/auth_configs", {
+        toolkit: { slug: appName },
+        type: "use_composio_auth",
       });
-      if (!createRes.ok) {
-        const e = await createRes.json().catch(() => ({ error: "Failed to create integration" }));
-        res.status(createRes.status).json(e);
+      if (createAcRes.ok) {
+        const created = await createAcRes.json().catch(() => ({}));
+        authConfigId = created.id || null;
+      } else {
+        const e = await createAcRes.json().catch(() => ({}));
+        res.status(createAcRes.status).json({ error: e?.error?.message || "Failed to create auth config" });
         return;
       }
-      const created = await createRes.json();
-      integrationId = created.id;
     }
 
-    if (!integrationId) {
-      res.status(500).json({ error: "Could not obtain integrationId for this app" });
+    if (!authConfigId) {
+      res.status(500).json({ error: `No auth config available for '${appName}'` });
       return;
     }
 
-    // Step 3: Initiate the OAuth connection
-    const body: Record<string, unknown> = { integrationId, entityId };
-    if (redirectUri) body.redirectUri = redirectUri;
-
-    const connRes = await composioFetch("/connectedAccounts", {
-      method: "POST",
-      body: JSON.stringify(body),
+    // ── Step 3: Create connected account (initiates OAuth) ────────────────────
+    const connRes = await v3Post("/connected_accounts", {
+      auth_config: { id: authConfigId },
+      connection: { user_uuid: entityId },
     });
-    const connData = await connRes.json();
-    if (!connRes.ok) { res.status(connRes.status).json(connData); return; }
-    res.json(connData);
+    const connData = await connRes.json().catch(() => ({}));
+
+    if (!connRes.ok) {
+      res.status(connRes.status).json({ error: connData?.error?.message || "Failed to initiate connection" });
+      return;
+    }
+
+    // Normalize response — v3 uses redirect_url (snake_case), frontend expects redirectUrl
+    const redirectUrl = connData.redirect_url || connData.redirectUrl || connData.redirectUri || null;
+    res.json({
+      ...connData,
+      redirectUrl,
+      connectionStatus: connData.status || connData.connectionStatus,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

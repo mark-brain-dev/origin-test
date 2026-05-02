@@ -306,44 +306,147 @@ function NotificationsSection() {
 }
 
 /* ─────────────────────────── INTEGRATIONS ─────────────────────────── */
+const INTEGRATION_APPS = [
+  { key: "googlecalendar", name: "Google Calendar", desc: "Sync meetings and events to your workspace", icon: "📅" },
+  { key: "slack", name: "Slack", desc: "Get notifications and share pages", icon: "💬" },
+  { key: "github", name: "GitHub", desc: "Link commits and PRs to pages", icon: "🐙" },
+  { key: "linear", name: "Linear", desc: "Sync issues as database rows", icon: "📐" },
+  { key: "figma", name: "Figma", desc: "Embed designs in pages", icon: "🎨" },
+  { key: "googledrive", name: "Google Drive", desc: "Attach and embed Drive files in pages", icon: "📁" },
+  { key: "gmail", name: "Gmail", desc: "Read, send and manage emails", icon: "📧" },
+  { key: "notion", name: "Notion", desc: "Import and sync your Notion workspace", icon: "📋" },
+  { key: "zoom", name: "Zoom", desc: "Schedule and manage Zoom meetings", icon: "📹" },
+  { key: "outlook", name: "Outlook", desc: "Connect Microsoft email and calendar", icon: "🟦" },
+];
+
 function IntegrationsSection() {
-  const apps = [
-    { name: "Google Calendar", desc: "Sync meetings to your workspace", icon: "📅", connected: false },
-    { name: "Slack", desc: "Get notifications and share pages", icon: "💬", connected: false },
-    { name: "GitHub", desc: "Link commits and PRs to pages", icon: "🐙", connected: false },
-    { name: "Linear", desc: "Sync issues as database rows", icon: "📐", connected: false },
-    { name: "Figma", desc: "Embed designs in pages", icon: "🎨", connected: false },
-  ];
-  const [connected, setConnected] = useState<Set<string>>(new Set());
+  const [connections, setConnections] = useState<any[]>([]);
+  const [connecting, setConnecting] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  const fetchConnections = useCallback(async () => {
+    try {
+      const r = await fetch(`${BASE_URL}/api/composio/connections?entityId=default`);
+      if (r.ok) { const d = await r.json(); setConnections(d.items || []); }
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [BASE_URL]);
+
+  useEffect(() => { fetchConnections(); }, [fetchConnections]);
+
+  const isConnected = (key: string) =>
+    connections.some((c: any) => c.appName?.toLowerCase() === key.toLowerCase() && c.status === "ACTIVE");
+
+  const getConnectionId = (key: string) =>
+    connections.find((c: any) => c.appName?.toLowerCase() === key.toLowerCase() && c.status === "ACTIVE")?.id;
+
+  const handleConnect = async (app: typeof INTEGRATION_APPS[0]) => {
+    setConnecting(app.key);
+    try {
+      const r = await fetch(`${BASE_URL}/api/composio/connections/initiate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appName: app.key, entityId: "default" }),
+      });
+      const data = await r.json();
+      if (!r.ok) { toast.error(data.error || `Failed to connect ${app.name}`); setConnecting(null); return; }
+
+      if (data.redirectUrl) {
+        const popup = window.open(data.redirectUrl, `nexus_oauth_${app.key}`, "width=600,height=700,scrollbars=yes");
+        toast.info(`Connecting ${app.name}…`, { description: "Complete the authorization in the popup", duration: 8000 });
+        const poll = setInterval(async () => {
+          if (!popup || popup.closed) {
+            clearInterval(poll);
+            await fetchConnections();
+          }
+        }, 1000);
+      } else {
+        toast.success(`${app.name} connected`);
+        await fetchConnections();
+      }
+    } catch (err: any) {
+      toast.error(err.message || `Failed to connect ${app.name}`);
+    }
+    setConnecting(null);
+  };
+
+  const handleDisconnect = async (app: typeof INTEGRATION_APPS[0]) => {
+    const id = getConnectionId(app.key);
+    if (!id) return;
+    setDisconnecting(app.key);
+    try {
+      const r = await fetch(`${BASE_URL}/api/composio/connections/${id}`, { method: "DELETE" });
+      if (r.ok || r.status === 204) {
+        setConnections((prev) => prev.filter((c: any) => c.id !== id));
+        toast.success(`${app.name} disconnected`);
+      } else { toast.error("Failed to disconnect"); }
+    } catch { toast.error("Failed to disconnect"); }
+    setDisconnecting(null);
+  };
 
   return (
     <ScrollArea className="h-full">
       <div className="p-8 max-w-2xl mx-auto space-y-8">
         <div>
           <h2 className="text-xl font-bold">Integrations</h2>
-          <p className="text-sm text-muted-foreground mt-1">Connect your favorite tools to Nexus OS</p>
+          <p className="text-sm text-muted-foreground mt-1">Connect your favorite tools to Nexus OS via secure OAuth</p>
         </div>
-        <div className="space-y-2">
-          {apps.map((app) => (
-            <div key={app.name} className="flex items-center gap-4 p-4 rounded-xl border border-border bg-card">
-              <div className="text-2xl">{app.icon}</div>
-              <div className="flex-1">
-                <div className="font-medium text-sm">{app.name}</div>
-                <div className="text-xs text-muted-foreground">{app.desc}</div>
-              </div>
-              <Button
-                size="sm"
-                variant={connected.has(app.name) ? "outline" : "default"}
-                className={cn("h-8 text-xs gap-1.5", !connected.has(app.name) && "bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0")}
-                onClick={() => {
-                  setConnected((prev) => { const n = new Set(prev); n.has(app.name) ? n.delete(app.name) : n.add(app.name); return n; });
-                  toast.success(connected.has(app.name) ? `${app.name} disconnected` : `${app.name} connected`);
-                }}
-              >
-                {connected.has(app.name) ? <><Check className="h-3 w-3" />Connected</> : "Connect"}
-              </Button>
-            </div>
-          ))}
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {INTEGRATION_APPS.map((app) => {
+              const connected = isConnected(app.key);
+              const busy = connecting === app.key || disconnecting === app.key;
+              return (
+                <div key={app.key} className={cn(
+                  "flex items-center gap-4 p-4 rounded-xl border transition-colors",
+                  connected ? "border-green-500/30 bg-green-500/5" : "border-border bg-card"
+                )}>
+                  <div className="text-2xl">{app.icon}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm">{app.name}</div>
+                    <div className="text-xs text-muted-foreground">{app.desc}</div>
+                    {connected && (
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                        <span className="text-[10px] text-green-400">Connected via Composio OAuth</span>
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={connected ? "outline" : "default"}
+                    disabled={busy}
+                    className={cn(
+                      "h-8 text-xs gap-1.5",
+                      connected
+                        ? "text-muted-foreground hover:text-destructive hover:border-destructive/40"
+                        : "bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0"
+                    )}
+                    onClick={() => connected ? handleDisconnect(app) : handleConnect(app)}
+                  >
+                    {busy
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : connected
+                        ? <><Check className="h-3 w-3" />Connected</>
+                        : "Connect"}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            All connections are secured through <strong>Composio OAuth</strong>. Your credentials are never stored in Nexus OS — they are managed by Composio's secure auth infrastructure.
+            Visit the <strong>Marketplace</strong> to connect 250+ additional apps.
+          </p>
         </div>
       </div>
     </ScrollArea>

@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Calendar, Plus, ChevronLeft, ChevronRight, Clock, MapPin,
-  Users, X, Check, Trash2, CalendarDays, Sparkles,
+  Users, X, Check, Trash2, CalendarDays, Sparkles, Loader2, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,6 +91,16 @@ function isSameDay(a: Date, b: Date) {
     a.getDate() === b.getDate();
 }
 
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+// Map calendar display name → Composio app key (null = no OAuth)
+const CALENDAR_SOURCES = [
+  { name: "Google Calendar", emoji: "📅", composioKey: "googlecalendar" },
+  { name: "Outlook", emoji: "🟦", composioKey: "outlook" },
+  { name: "Zoom", emoji: "📹", composioKey: "zoom" },
+  { name: "Apple Calendar", emoji: "🍎", composioKey: null },
+];
+
 export default function MeetingsView() {
   const { currentWorkspaceId } = useAppStore();
   const [view, setView] = useState<"month" | "week" | "list">("month");
@@ -99,7 +109,10 @@ export default function MeetingsView() {
   const [selectedDay, setSelectedDay] = useState<Date | null>(new Date());
   const [showCreate, setShowCreate] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
-  const [calendarConnects, setCalendarConnects] = useState<Record<string, boolean>>({});
+
+  // Real calendar connections via Composio
+  const [connections, setConnections] = useState<any[]>([]);
+  const [connecting, setConnecting] = useState<string | null>(null);
 
   // Create form state
   const [newTitle, setNewTitle] = useState("");
@@ -162,9 +175,57 @@ export default function MeetingsView() {
     toast.success("Meeting deleted");
   };
 
-  const connectCalendar = (name: string) => {
-    setCalendarConnects(prev => ({ ...prev, [name]: true }));
-    toast.success(`${name} calendar connected! Syncing...`);
+  const fetchConnections = useCallback(async () => {
+    try {
+      const r = await fetch(`${BASE}/api/composio/connections?entityId=default`);
+      if (r.ok) { const d = await r.json(); setConnections(d.items || []); }
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { fetchConnections(); }, [fetchConnections]);
+
+  const isCalendarConnected = (composioKey: string | null) =>
+    composioKey
+      ? connections.some((c: any) => c.appName?.toLowerCase() === composioKey.toLowerCase() && c.status === "ACTIVE")
+      : false;
+
+  const connectCalendar = async (cal: typeof CALENDAR_SOURCES[0]) => {
+    if (!cal.composioKey) {
+      // Apple Calendar — no OAuth, show info
+      toast.info("Apple Calendar uses iCloud", {
+        description: "Export your Apple Calendar as .ics and import it here, or sync via iCloud.com",
+        duration: 6000,
+      });
+      return;
+    }
+
+    setConnecting(cal.composioKey);
+    try {
+      const r = await fetch(`${BASE}/api/composio/connections/initiate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appName: cal.composioKey, entityId: "default" }),
+      });
+      const data = await r.json();
+      if (!r.ok) { toast.error(data.error || `Failed to connect ${cal.name}`); setConnecting(null); return; }
+
+      if (data.redirectUrl) {
+        const popup = window.open(data.redirectUrl, `nexus_cal_${cal.composioKey}`, "width=600,height=700,scrollbars=yes");
+        toast.info(`Connecting ${cal.name}…`, { description: "Complete authorization in the popup window", duration: 8000 });
+        const poll = setInterval(async () => {
+          if (!popup || popup.closed) {
+            clearInterval(poll);
+            await fetchConnections();
+          }
+        }, 1000);
+      } else {
+        toast.success(`${cal.name} connected`);
+        await fetchConnections();
+      }
+    } catch (err: any) {
+      toast.error(err.message || `Failed to connect ${cal.name}`);
+    }
+    setConnecting(null);
   };
 
   const days = getMonthDays();
@@ -239,28 +300,36 @@ export default function MeetingsView() {
         {/* Calendar connections */}
         <div className="p-3 border-b border-border/40">
           <div className="text-[10px] text-muted-foreground/50 uppercase font-semibold tracking-wider mb-2">Connect Calendars</div>
-          {[
-            { name: "Google Calendar", emoji: "📅", color: "text-blue-400" },
-            { name: "Apple Calendar", emoji: "🍎", color: "text-gray-400" },
-            { name: "Outlook", emoji: "📧", color: "text-blue-500" },
-          ].map((cal) => (
-            <button
-              key={cal.name}
-              onClick={() => connectCalendar(cal.name)}
-              className={cn(
-                "w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors",
-                calendarConnects[cal.name]
-                  ? "text-green-400 bg-green-500/10"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-              )}
-            >
-              <span>{cal.emoji}</span>
-              <span className="flex-1 text-left">{cal.name}</span>
-              {calendarConnects[cal.name]
-                ? <Check className="h-3 w-3" />
-                : <Plus className="h-3 w-3 opacity-50" />}
-            </button>
-          ))}
+          {CALENDAR_SOURCES.map((cal) => {
+            const connected = isCalendarConnected(cal.composioKey);
+            const busy = connecting === cal.composioKey;
+            const isApple = !cal.composioKey;
+            return (
+              <button
+                key={cal.name}
+                onClick={() => connectCalendar(cal)}
+                disabled={busy}
+                className={cn(
+                  "w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors",
+                  connected
+                    ? "text-green-400 bg-green-500/10"
+                    : isApple
+                      ? "text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent/30"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                )}
+              >
+                <span>{cal.emoji}</span>
+                <span className="flex-1 text-left">{cal.name}</span>
+                {busy
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : connected
+                    ? <Check className="h-3 w-3" />
+                    : isApple
+                      ? <ExternalLink className="h-3 w-3 opacity-30" />
+                      : <Plus className="h-3 w-3 opacity-50" />}
+              </button>
+            );
+          })}
         </div>
 
         {/* Upcoming */}
