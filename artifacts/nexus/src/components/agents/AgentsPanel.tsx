@@ -157,7 +157,7 @@ export default function AgentsPanel() {
     try {
       const [connRes, actRes] = await Promise.all([
         fetch(`${BASE}/api/composio/connections?entityId=default`),
-        fetch(`${BASE}/api/composio/actions?limit=50&filterImportantActions=true`),
+        fetch(`${BASE}/api/composio/actions?limit=100`),
       ]);
       if (connRes.ok) {
         const data = await connRes.json();
@@ -485,128 +485,106 @@ export default function AgentsPanel() {
                       </div>
                     ) : (
                       <>
-                        {/* Connected Apps */}
-                        <div>
-                          <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                            Connected Apps · {composioConnections.filter(c => c.status === "ACTIVE").length}
-                          </h3>
-                          {composioConnections.filter(c => c.status === "ACTIVE").length === 0 ? (
-                            <div className="rounded-xl border border-dashed border-border/60 p-6 text-center">
-                              <Wrench className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
-                              <p className="text-xs text-muted-foreground mb-3">No apps connected yet</p>
-                              <p className="text-[10px] text-muted-foreground/60 mb-3">
-                                Connect GitHub, Slack, Gmail and 250+ more tools via Composio
-                              </p>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 text-xs gap-1.5"
-                                onClick={() => window.open("/mcp-connections", "_self")}
+                        {/* Connected Apps row */}
+                        {composioConnections.filter(c => c.status === "ACTIVE").length > 0 && (
+                          <div>
+                            <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                              Connected Apps · {composioConnections.filter(c => c.status === "ACTIVE").length}
+                            </h3>
+                            <div className="flex flex-wrap gap-1.5 mb-1">
+                              <button
+                                onClick={() => setSelectedApp(null)}
+                                className={cn(
+                                  "flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs transition-all",
+                                  !selectedApp
+                                    ? "border-primary/40 bg-primary/10 text-primary"
+                                    : "border-border/60 text-muted-foreground hover:border-border"
+                                )}
                               >
-                                <Link2 className="h-3 w-3" />
-                                Connect Apps
-                              </Button>
+                                All tools
+                              </button>
+                              {composioConnections.filter(c => c.status === "ACTIVE").map((conn) => (
+                                <button
+                                  key={conn.id}
+                                  onClick={() => setSelectedApp(selectedApp === conn.appName ? null : conn.appName)}
+                                  className={cn(
+                                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs transition-all capitalize",
+                                    selectedApp === conn.appName
+                                      ? "border-primary/40 bg-primary/10 text-primary"
+                                      : "border-border/60 text-muted-foreground hover:border-border"
+                                  )}
+                                >
+                                  <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                                  {conn.appName}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* All Available Actions (always shown) */}
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                              Available Actions · {composioActions.filter(a =>
+                                !selectedApp || a.appName?.toLowerCase() === selectedApp?.toLowerCase()
+                              ).filter(a =>
+                                !toolSearch || (a.displayName || a.name || "").toLowerCase().includes(toolSearch.toLowerCase())
+                              ).length}
+                            </h3>
+                            {selectedApp && (
+                              <button onClick={() => setSelectedApp(null)}
+                                className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5">
+                                <ChevronLeft className="h-3 w-3" /> All
+                              </button>
+                            )}
+                          </div>
+                          <div className="relative mb-3">
+                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                            <input
+                              value={toolSearch}
+                              onChange={(e) => setToolSearch(e.target.value)}
+                              placeholder="Search actions…"
+                              className="w-full bg-muted/40 rounded-lg pl-7 pr-3 py-1.5 text-xs border border-border/40 focus:border-primary/50 outline-none"
+                            />
+                          </div>
+                          {composioActions.length === 0 ? (
+                            <div className="text-center py-8 text-xs text-muted-foreground">
+                              <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2 opacity-40" />
+                              Loading tools…
                             </div>
                           ) : (
-                            <div className="grid grid-cols-2 gap-2">
-                              {composioConnections
-                                .filter(c => c.status === "ACTIVE")
-                                .map((conn) => (
-                                  <button
-                                    key={conn.id}
-                                    onClick={() => setSelectedApp(
-                                      selectedApp === conn.appName ? null : conn.appName
-                                    )}
-                                    className={cn(
-                                      "flex items-center gap-2.5 p-3 rounded-xl border text-left transition-all",
-                                      selectedApp === conn.appName
-                                        ? "border-primary/40 bg-primary/5"
-                                        : "border-border/60 bg-card hover:border-border"
-                                    )}
-                                  >
-                                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500/20 to-indigo-500/20 flex items-center justify-center text-sm flex-shrink-0">
-                                      {conn.appName?.[0]?.toUpperCase() || "?"}
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <div className="text-xs font-medium text-foreground capitalize truncate">
-                                        {conn.appName}
-                                      </div>
-                                      <div className="flex items-center gap-1 mt-0.5">
-                                        <div className="w-1 h-1 rounded-full bg-green-400" />
-                                        <span className="text-[10px] text-green-400">Active</span>
-                                      </div>
-                                    </div>
-                                  </button>
-                                ))}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Available Actions */}
-                        {composioActions.length > 0 && (
-                          <div>
-                            <div className="flex items-center justify-between mb-3">
-                              <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                                Available Actions · {composioActions.filter(a =>
-                                  !selectedApp || a.appName?.toLowerCase() === selectedApp.toLowerCase()
-                                ).filter(a =>
-                                  !toolSearch || (a.displayName || a.name || "").toLowerCase().includes(toolSearch.toLowerCase())
-                                ).length}
-                              </h3>
-                              {selectedApp && (
-                                <button
-                                  onClick={() => setSelectedApp(null)}
-                                  className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5"
-                                >
-                                  <ChevronLeft className="h-3 w-3" />
-                                  All
-                                </button>
-                              )}
-                            </div>
-                            <div className="relative mb-3">
-                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-                              <input
-                                value={toolSearch}
-                                onChange={(e) => setToolSearch(e.target.value)}
-                                placeholder="Search actions…"
-                                className="w-full bg-muted/40 rounded-lg pl-7 pr-3 py-1.5 text-xs border border-border/40 focus:border-primary/50 outline-none"
-                              />
-                            </div>
                             <div className="space-y-1.5">
                               {composioActions
-                                .filter(a => !selectedApp || a.appName?.toLowerCase() === selectedApp.toLowerCase())
+                                .filter(a => !selectedApp || a.appName?.toLowerCase() === selectedApp?.toLowerCase())
                                 .filter(a => !toolSearch || (a.displayName || a.name || "").toLowerCase().includes(toolSearch.toLowerCase()))
-                                .slice(0, 30)
+                                .slice(0, 40)
                                 .map((action) => (
-                                  <div
-                                    key={action.name}
-                                    className="flex items-start gap-3 p-3 rounded-lg border border-border/40 bg-card hover:border-border/60 transition-colors group"
+                                  <div key={action.name}
+                                    className="flex items-start gap-3 p-2.5 rounded-lg border border-border/40 bg-card hover:border-border/60 transition-colors group"
                                   >
                                     <div className="w-6 h-6 rounded-md bg-violet-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
                                       <Zap className="h-3 w-3 text-violet-400" />
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                      <div className="text-xs font-medium text-foreground truncate">
-                                        {action.displayName || action.name}
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-xs font-medium text-foreground truncate">
+                                          {action.displayName || action.name}
+                                        </span>
+                                        <span className="text-[9px] text-muted-foreground/40 font-mono flex-shrink-0 capitalize">
+                                          {action.appName}
+                                        </span>
                                       </div>
                                       {action.description && (
                                         <div className="text-[10px] text-muted-foreground line-clamp-1 mt-0.5">
                                           {action.description}
                                         </div>
                                       )}
-                                      {action.appName && (
-                                        <div className="text-[9px] text-muted-foreground/50 mt-0.5 font-mono">
-                                          {action.appName}
-                                        </div>
-                                      )}
                                     </div>
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-6 px-2 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                    <Button size="sm" variant="ghost"
+                                      className="h-6 px-2 text-[10px] text-primary opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                                       onClick={() => {
-                                        const actionText = `Use the ${action.displayName || action.name} action`;
-                                        setPrompt(actionText);
+                                        setPrompt(`Use the ${action.displayName || action.name} action from ${action.appName}`);
                                         setActiveView("chat");
                                         textareaRef.current?.focus();
                                       }}
@@ -616,15 +594,20 @@ export default function AgentsPanel() {
                                   </div>
                                 ))}
                             </div>
-                          </div>
-                        )}
+                          )}
+                        </div>
 
-                        {/* No actions state */}
-                        {composioActions.length === 0 && composioConnections.filter(c => c.status === "ACTIVE").length > 0 && (
-                          <div className="rounded-xl border border-border/40 p-4 text-center">
-                            <p className="text-xs text-muted-foreground">
-                              No actions available for connected apps yet
+                        {/* No connections CTA */}
+                        {composioConnections.filter(c => c.status === "ACTIVE").length === 0 && (
+                          <div className="rounded-xl border border-dashed border-border/60 p-4 text-center">
+                            <Link2 className="h-5 w-5 text-muted-foreground/30 mx-auto mb-2" />
+                            <p className="text-[10px] text-muted-foreground mb-2">
+                              Connect apps to activate tools for this agent
                             </p>
+                            <Button size="sm" variant="outline" className="h-6 text-xs gap-1"
+                              onClick={() => { window.history.pushState(null, "", "/marketplace"); window.dispatchEvent(new PopStateEvent("popstate")); }}>
+                              <Link2 className="h-3 w-3" /> Connect Apps
+                            </Button>
                           </div>
                         )}
                       </>

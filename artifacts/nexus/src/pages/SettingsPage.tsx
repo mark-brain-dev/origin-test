@@ -1,11 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings, Brain, Zap, Key, Plus, Trash2, Check, X, ExternalLink,
   RefreshCw, Shield, User, Palette, Database, Globe, Star, ChevronRight,
   Eye, EyeOff, TestTube2, CheckCircle, XCircle, Loader2, Hash,
   Bell, Mail, Plug, Users, Download, Upload, Cpu, Lock, ChevronDown,
-  Sparkles, BookOpen, LayoutGrid, Code, Bot,
+  Sparkles, BookOpen, LayoutGrid, Code, Bot, Search,
 } from "lucide-react";
 import {
   useListAiProviders, useGetAiProviderCatalog, useCreateAiProvider,
@@ -58,6 +58,7 @@ const NAV_GROUPS = [
       { id: "memory", label: "AI Memory", icon: <Hash className="h-4 w-4" /> },
       { id: "skills", label: "AI Skills", icon: <Zap className="h-4 w-4" /> },
       { id: "mcp", label: "MCP Integrations", icon: <Code className="h-4 w-4" /> },
+      { id: "triggers", label: "Triggers", icon: <Zap className="h-4 w-4" /> },
       { id: "agents", label: "Agents", icon: <Bot className="h-4 w-4" /> },
     ],
   },
@@ -129,6 +130,7 @@ export default function SettingsPage({ section }: SettingsPageProps) {
             {activeSection === "memory" && <MemorySection />}
             {activeSection === "skills" && <SkillsSection />}
             {activeSection === "mcp" && <MCPSection />}
+            {activeSection === "triggers" && <TriggersSection />}
             {activeSection === "agents" && <AgentsSettingsSection />}
             {activeSection === "appearance" && <AppearanceSection />}
             {activeSection === "security" && <SecuritySection />}
@@ -1275,6 +1277,312 @@ function SecuritySection() {
             Nexus OS stores all your data locally. AI requests are sent directly to your configured providers. No data is shared with Nexus OS servers unless explicitly exported.
           </p>
         </div>
+      </div>
+    </ScrollArea>
+  );
+}
+
+/* ─────────────────────────── TRIGGERS ─────────────────────────── */
+function TriggersSection() {
+  const [triggers, setTriggers] = useState<any[]>([]);
+  const [instances, setInstances] = useState<any[]>([]);
+  const [connections, setConnections] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [appFilter, setAppFilter] = useState("all");
+  const [subscribing, setSubscribing] = useState<string | null>(null);
+  const [unsubscribing, setUnsubscribing] = useState<string | null>(null);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [trigRes, instRes, connRes] = await Promise.all([
+        fetch(`${BASE_URL}/api/composio/triggers?limit=100`),
+        fetch(`${BASE_URL}/api/composio/triggers/instances`),
+        fetch(`${BASE_URL}/api/composio/connections?entityId=default`),
+      ]);
+      if (trigRes.ok) {
+        const d = await trigRes.json();
+        setTriggers(d.items || []);
+      }
+      if (instRes.ok) {
+        const d = await instRes.json();
+        setInstances(d.items || []);
+      }
+      if (connRes.ok) {
+        const d = await connRes.json();
+        setConnections(d.items || []);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const isSubscribed = (triggerName: string) =>
+    instances.some((i: any) => i.triggerName === triggerName || i.type === triggerName);
+
+  const getInstanceId = (triggerName: string) =>
+    instances.find((i: any) => i.triggerName === triggerName || i.type === triggerName)?.id;
+
+  const handleSubscribe = async (trigger: any) => {
+    // Find a connected account for this trigger's app
+    const appKey = trigger.appKey || trigger.appId || (trigger.name || "").split("_")[0]?.toLowerCase();
+    const conn = connections.find((c: any) =>
+      c.appName?.toLowerCase() === appKey?.toLowerCase() && c.status === "ACTIVE"
+    );
+    if (!conn) {
+      toast.error(`Connect ${appKey || "the app"} first via Marketplace → Connect Apps`);
+      return;
+    }
+    setSubscribing(trigger.name);
+    try {
+      const r = await fetch(`${BASE_URL}/api/composio/triggers/subscribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          triggerName: trigger.name,
+          connectedAccountId: conn.id,
+          entityId: "default",
+          config: {},
+        }),
+      });
+      if (r.ok || r.status === 200) {
+        toast.success(`Subscribed to "${trigger.display_name || trigger.name}"`);
+        await fetchAll();
+      } else {
+        const e = await r.json().catch(() => ({}));
+        toast.error(e.error || "Failed to subscribe");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to subscribe");
+    }
+    setSubscribing(null);
+  };
+
+  const handleUnsubscribe = async (trigger: any) => {
+    const instanceId = getInstanceId(trigger.name);
+    if (!instanceId) return;
+    setUnsubscribing(trigger.name);
+    try {
+      const r = await fetch(`${BASE_URL}/api/composio/triggers/instances/${instanceId}`, {
+        method: "DELETE",
+      });
+      if (r.ok || r.status === 204) {
+        setInstances((prev) => prev.filter((i: any) => i.id !== instanceId));
+        toast.success(`Unsubscribed from "${trigger.display_name || trigger.name}"`);
+      } else {
+        toast.error("Failed to unsubscribe");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to unsubscribe");
+    }
+    setUnsubscribing(null);
+  };
+
+  // Get unique app names from triggers
+  const appNames = Array.from(new Set(
+    triggers.map((t: any) => {
+      const raw = t.appKey || (t.name || "").split("_")[0]?.toLowerCase() || "unknown";
+      return raw;
+    })
+  )).sort();
+
+  const filtered = triggers.filter((t: any) => {
+    const name = (t.display_name || t.name || "").toLowerCase();
+    const desc = (t.description || "").toLowerCase();
+    const matchSearch = !search || name.includes(search.toLowerCase()) || desc.includes(search.toLowerCase());
+    const trigApp = (t.appKey || (t.name || "").split("_")[0]?.toLowerCase() || "");
+    const matchApp = appFilter === "all" || trigApp === appFilter;
+    return matchSearch && matchApp;
+  });
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="p-8 max-w-2xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-xl font-bold">Triggers</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Subscribe to real-time events from your connected apps. {triggers.length} triggers available.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={fetchAll}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            Refresh
+          </Button>
+        </div>
+
+        {/* Active subscriptions */}
+        {instances.length > 0 && (
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Active Subscriptions · {instances.length}
+            </h3>
+            {instances.map((inst: any) => (
+              <div key={inst.id} className="flex items-center gap-3 p-3 rounded-xl border border-green-500/30 bg-green-500/5">
+                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm text-foreground truncate">
+                    {inst.triggerName || inst.type || inst.name || inst.id}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {inst.connectedAccountId ? `Account: ${inst.connectedAccountId?.slice(0, 12)}…` : "Active"}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs text-muted-foreground hover:text-destructive flex-shrink-0"
+                  onClick={() => handleUnsubscribe({ name: inst.triggerName || inst.type })}
+                  disabled={unsubscribing === (inst.triggerName || inst.type)}
+                >
+                  {unsubscribing === (inst.triggerName || inst.type)
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : <><Trash2 className="h-3 w-3 mr-1" />Unsubscribe</>
+                  }
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Composio status notice */}
+        {connections.length === 0 && (
+          <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-4 flex items-start gap-3">
+            <Zap className="h-4 w-4 text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-medium text-foreground">Connect apps to use triggers</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Go to <strong>Marketplace</strong> and connect GitHub, Slack, Gmail or any other app first.
+                Triggers fire in real-time when events happen in your connected apps.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Search + filter */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search triggers…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9 h-9 text-sm"
+            />
+          </div>
+          <Select value={appFilter} onValueChange={setAppFilter}>
+            <SelectTrigger className="w-36 h-9 text-xs">
+              <SelectValue placeholder="All apps" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All apps</SelectItem>
+              {appNames.slice(0, 30).map((app) => (
+                <SelectItem key={app} value={app} className="capitalize">{app}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Trigger list */}
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {filtered.slice(0, 50).map((trigger: any) => {
+              const subscribed = isSubscribed(trigger.name);
+              const appKey = trigger.appKey || (trigger.name || "").split("_")[0]?.toLowerCase();
+              const hasConnection = connections.some(
+                (c: any) => c.appName?.toLowerCase() === appKey?.toLowerCase() && c.status === "ACTIVE"
+              );
+              return (
+                <div
+                  key={trigger.name}
+                  className={cn(
+                    "flex items-start gap-3 p-4 rounded-xl border transition-colors",
+                    subscribed
+                      ? "border-primary/30 bg-primary/5"
+                      : "border-border/60 bg-card hover:border-border"
+                  )}
+                >
+                  <div className={cn(
+                    "w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5",
+                    subscribed ? "bg-primary/15" : "bg-muted/60"
+                  )}>
+                    <Zap className={cn("h-4 w-4", subscribed ? "text-primary" : "text-muted-foreground")} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="font-medium text-sm text-foreground truncate">
+                        {trigger.display_name || trigger.name}
+                      </span>
+                      {subscribed && (
+                        <Badge className="bg-primary/10 text-primary border-primary/20 border text-[9px] px-1.5 h-3.5 flex-shrink-0">
+                          Active
+                        </Badge>
+                      )}
+                      {!hasConnection && (
+                        <Badge className="bg-muted text-muted-foreground border text-[9px] px-1.5 h-3.5 flex-shrink-0">
+                          Not connected
+                        </Badge>
+                      )}
+                    </div>
+                    {trigger.description && (
+                      <p className="text-xs text-muted-foreground line-clamp-2 mb-1">
+                        {trigger.description}
+                      </p>
+                    )}
+                    <div className="text-[10px] font-mono text-muted-foreground/40 uppercase">
+                      {appKey}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={subscribed ? "outline" : "default"}
+                    className={cn(
+                      "h-7 text-xs flex-shrink-0",
+                      subscribed
+                        ? "text-destructive hover:bg-destructive/10 hover:border-destructive/40"
+                        : hasConnection
+                          ? "bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0"
+                          : ""
+                    )}
+                    disabled={
+                      subscribing === trigger.name ||
+                      unsubscribing === trigger.name ||
+                      (!subscribed && !hasConnection)
+                    }
+                    onClick={() => subscribed ? handleUnsubscribe(trigger) : handleSubscribe(trigger)}
+                  >
+                    {subscribing === trigger.name || unsubscribing === trigger.name ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : subscribed ? (
+                      "Unsubscribe"
+                    ) : hasConnection ? (
+                      "Subscribe"
+                    ) : (
+                      "Connect first"
+                    )}
+                  </Button>
+                </div>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div className="text-center py-10 text-sm text-muted-foreground">
+                No triggers match your search
+              </div>
+            )}
+            {filtered.length > 50 && (
+              <p className="text-xs text-center text-muted-foreground/60">
+                Showing 50 of {filtered.length} — refine search to see more
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </ScrollArea>
   );

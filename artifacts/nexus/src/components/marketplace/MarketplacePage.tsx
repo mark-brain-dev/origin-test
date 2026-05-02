@@ -165,21 +165,11 @@ export default function MarketplacePage() {
   const handleConnect = async (app: ComposioApp) => {
     setConnectingApp(app.key);
     try {
-      // First, get integrations for this app to find the integrationId
-      const intRes = await fetch(`${BASE}/api/composio/integrations?appName=${app.key}`);
-      let integrationId = app.key;
-      if (intRes.ok) {
-        const intData = await intRes.json();
-        const items = intData.items || intData || [];
-        if (items.length > 0) {
-          integrationId = items[0].id || app.key;
-        }
-      }
-
+      // Backend handles multi-step: find app → create integration → initiate OAuth
       const r = await fetch(`${BASE}/api/composio/connections/initiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ integrationId, entityId: "default" }),
+        body: JSON.stringify({ appName: app.key, entityId: "default" }),
       });
 
       const data = await r.json();
