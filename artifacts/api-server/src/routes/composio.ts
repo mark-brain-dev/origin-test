@@ -865,25 +865,67 @@ router.post("/gmail/send", async (req: Request, res: Response) => {
 });
 
 // Helper — normalize email objects from different Composio action response shapes
+// safeStr — coerce any Composio field value to a plain string
+function safeStr(val: any, fallback = ""): string {
+  if (val == null) return fallback;
+  if (typeof val === "string") return val;
+  if (typeof val === "number" || typeof val === "boolean") return String(val);
+  // Object with a "text" or "plain" or "html" key (Composio nested body shapes)
+  if (typeof val === "object") {
+    const s =
+      val.text ?? val.plain ?? val.html ?? val.body ?? val.content ??
+      val.subject ?? val.value ?? val.snippet ?? val.preview ?? null;
+    if (s != null) return safeStr(s, fallback);
+    // Last resort: JSON stringify (avoids React "Objects are not valid" crash)
+    try { return JSON.stringify(val); } catch { return fallback; }
+  }
+  return fallback;
+}
+
 function normalizeEmails(raw: any): Array<{
   id: string; threadId: string; subject: string; from: string; to: string;
   snippet: string; body: string; date: string; read: boolean; starred: boolean; labels: string[];
 }> {
-  const data = raw?.data ?? raw?.response_data ?? raw?.result ?? raw;
-  const messages: any[] = data?.messages ?? data?.emails ?? data?.items ?? (Array.isArray(data) ? data : []);
-  return messages.map((m: any, i: number) => ({
-    id: m.id || m.messageId || `msg-${i}`,
-    threadId: m.threadId || m.thread_id || m.id || `thread-${i}`,
-    subject: m.subject || m.Subject || "(no subject)",
-    from: m.from || m.From || m.sender || "",
-    to: m.to || m.To || m.recipient || "",
-    snippet: m.snippet || m.preview || m.body?.slice?.(0, 120) || "",
-    body: m.body || m.htmlBody || m.textBody || m.content || m.snippet || "",
-    date: m.date || m.internalDate || m.receivedAt || new Date().toISOString(),
-    read: m.read ?? m.isRead ?? !m.labelIds?.includes?.("UNREAD") ?? true,
-    starred: m.starred ?? m.isStarred ?? m.labelIds?.includes?.("STARRED") ?? false,
-    labels: m.labelIds || m.labels || [],
-  }));
+  // Unwrap various Composio response envelope shapes
+  let data = raw;
+  for (const key of ["data", "response_data", "result", "execution_details", "response"]) {
+    if (raw?.[key] != null && typeof raw[key] === "object") { data = raw[key]; break; }
+  }
+
+  // Find the array of messages across all known shapes
+  const messages: any[] = (
+    data?.messages ??
+    data?.emails ??
+    data?.items ??
+    data?.threads ??
+    data?.messageList ??
+    (Array.isArray(data) ? data : null) ??
+    []
+  );
+
+  return messages.map((m: any, i: number) => {
+    const rawBody = m.body ?? m.htmlBody ?? m.textBody ?? m.content ?? m.html ?? m.text ?? m.snippet ?? "";
+    const bodyStr = safeStr(rawBody);
+
+    const rawSubject = m.subject ?? m.Subject ?? m.title ?? "";
+    const rawFrom = m.from ?? m.From ?? m.sender ?? m.fromEmail ?? m.senderEmail ?? "";
+    const rawTo = m.to ?? m.To ?? m.recipient ?? m.recipientEmail ?? "";
+    const rawSnippet = m.snippet ?? m.preview ?? m.summary ?? "";
+
+    return {
+      id: safeStr(m.id ?? m.messageId ?? m.message_id ?? `msg-${i}`),
+      threadId: safeStr(m.threadId ?? m.thread_id ?? m.id ?? `thread-${i}`),
+      subject: safeStr(rawSubject) || "(no subject)",
+      from: safeStr(rawFrom),
+      to: safeStr(rawTo),
+      snippet: safeStr(rawSnippet) || bodyStr.slice(0, 150).replace(/<[^>]+>/g, ""),
+      body: bodyStr,
+      date: safeStr(m.date ?? m.internalDate ?? m.receivedAt ?? m.timestamp ?? m.created_at ?? new Date().toISOString()),
+      read: !!(m.read ?? m.isRead ?? m.is_read ?? !(m.labelIds ?? m.labels ?? []).includes?.("UNREAD") ?? true),
+      starred: !!(m.starred ?? m.isStarred ?? m.is_starred ?? (m.labelIds ?? m.labels ?? []).includes?.("STARRED") ?? false),
+      labels: Array.isArray(m.labelIds) ? m.labelIds : Array.isArray(m.labels) ? m.labels : [],
+    };
+  });
 }
 
 // ─── Agent Context ────────────────────────────────────────────────────────────

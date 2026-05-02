@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Mail, Send, Star, StarOff, RefreshCw, Search, Inbox,
-  Loader2, AlertCircle, ChevronLeft, Reply, Forward,
-  Trash2, Archive, MoreHorizontal, PenSquare, X, CheckCircle,
-  Plug, ExternalLink,
+  Loader2, ChevronLeft, Reply, Forward,
+  Trash2, PenSquare, X, Plug, ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +14,22 @@ import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+// ── Safety guard: always convert any value to a plain string before rendering ──
+function s(val: unknown, fallback = ""): string {
+  if (val == null) return fallback;
+  if (typeof val === "string") return val;
+  if (typeof val === "number" || typeof val === "boolean") return String(val);
+  if (typeof val === "object") {
+    const o = val as Record<string, unknown>;
+    const inner =
+      o.text ?? o.plain ?? o.html ?? o.body ?? o.content ??
+      o.subject ?? o.value ?? o.snippet ?? o.preview ?? null;
+    if (inner != null) return s(inner, fallback);
+    try { return JSON.stringify(val); } catch { return fallback; }
+  }
+  return fallback;
+}
 
 interface Email {
   id: string;
@@ -37,9 +52,10 @@ const FOLDERS = [
   { id: "is:unread", label: "Unread", icon: Mail },
 ];
 
-function formatDate(dateStr: string) {
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return dateStr;
+function formatDate(dateStr: string): string {
+  const raw = s(dateStr);
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return raw;
   const now = new Date();
   const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
   if (diffDays === 0) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -47,23 +63,25 @@ function formatDate(dateStr: string) {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function extractName(fromStr: string) {
-  const match = fromStr.match(/^([^<]+)</);
+function extractName(fromStr: unknown): string {
+  const str = s(fromStr);
+  const match = str.match(/^([^<]+)</);
   if (match) return match[1].trim();
-  return fromStr.split("@")[0] || fromStr;
+  return str.split("@")[0] || str;
 }
 
-function extractEmail(fromStr: string) {
-  const match = fromStr.match(/<([^>]+)>/);
+function extractEmail(fromStr: unknown): string {
+  const str = s(fromStr);
+  const match = str.match(/<([^>]+)>/);
   if (match) return match[1];
-  return fromStr;
+  return str;
 }
 
-function avatarChar(fromStr: string) {
-  return (extractName(fromStr)[0] || "?").toUpperCase();
+function avatarChar(fromStr: unknown): string {
+  return (s(fromStr)[0] || "?").toUpperCase();
 }
 
-function avatarColor(fromStr: string) {
+function avatarColor(fromStr: unknown): string {
   const colors = [
     "from-violet-500 to-indigo-600",
     "from-blue-500 to-cyan-500",
@@ -72,15 +90,35 @@ function avatarColor(fromStr: string) {
     "from-pink-500 to-fuchsia-500",
     "from-amber-500 to-orange-500",
   ];
+  const str = s(fromStr);
   let hash = 0;
-  for (const c of fromStr) hash = (hash * 31 + c.charCodeAt(0)) & 0xffffff;
+  for (const c of str) hash = (hash * 31 + c.charCodeAt(0)) & 0xffffff;
   return colors[hash % colors.length];
 }
 
+const CACHE_KEY = "nexus_gmail_inbox_cache";
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function loadCache(): { emails: Email[]; ts: number } | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+function saveCache(emails: Email[]) {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ emails, ts: Date.now() })); } catch { /* ignore */ }
+}
+
 export default function GmailInboxView() {
-  const [emails, setEmails] = useState<Email[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [connected, setConnected] = useState<boolean | null>(null);
+  const cached = loadCache();
+  const [emails, setEmails] = useState<Email[]>(cached?.emails ?? []);
+  // Only show the full-page spinner on the very first load (no cache)
+  const [loading, setLoading] = useState(cached === null);
+  const [backgroundRefreshing, setBackgroundRefreshing] = useState(cached !== null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [connected, setConnected] = useState<boolean | null>(cached !== null ? true : null);
   const [selected, setSelected] = useState<Email | null>(null);
   const [folder, setFolder] = useState("in:inbox");
   const [search, setSearch] = useState("");
@@ -90,18 +128,71 @@ export default function GmailInboxView() {
   const [sending, setSending] = useState(false);
   const [starred, setStarred] = useState<Set<string>>(new Set());
   const [read, setRead] = useState<Set<string>>(new Set());
+  const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
+  const [hasMore, setHasMore] = useState(false);
   const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const fetchEmails = useCallback(async (q?: string) => {
-    setLoading(true);
+  const fetchEmails = useCallback(async (q?: string, pageToken?: string, append = false) => {
+    // Cancel any in-flight primary fetch
+    if (!append) {
+      abortRef.current?.abort();
+      abortRef.current = new AbortController();
+    }
+    if (append) setLoadingMore(true);
+    else setLoading(true);
+
     try {
       const query = q ?? folder;
-      const r = await fetch(`${BASE}/api/composio/gmail/inbox?entityId=default&maxResults=30&q=${encodeURIComponent(query)}`);
+      const params = new URLSearchParams({
+        entityId: "default",
+        maxResults: "50",
+        q: query,
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+
+      const r = await fetch(`${BASE}/api/composio/gmail/inbox?${params}`, {
+        signal: append ? undefined : abortRef.current?.signal,
+      });
+      if (!r.ok && r.status !== 200) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       setConnected(d.connected ?? false);
-      const fetched: Email[] = d.emails || [];
-      setEmails(fetched);
-      // Persist read/star state
+      setBackgroundRefreshing(false);
+
+      const fetched: Email[] = (d.emails || []).map((e: unknown) => {
+        const m = e as Record<string, unknown>;
+        return {
+          id: s(m.id || m.messageId, `msg-${Math.random()}`),
+          threadId: s(m.threadId || m.thread_id || m.id, ""),
+          subject: s(m.subject || m.Subject) || "(no subject)",
+          from: s(m.from || m.From || m.sender || ""),
+          to: s(m.to || m.To || m.recipient || ""),
+          snippet: s(m.snippet || m.preview || ""),
+          body: s(m.body || m.htmlBody || m.textBody || m.content || m.snippet || ""),
+          date: s(m.date || m.internalDate || m.receivedAt || new Date().toISOString()),
+          read: !!(m.read ?? m.isRead ?? true),
+          starred: !!(m.starred ?? m.isStarred ?? false),
+          labels: Array.isArray(m.labels) ? (m.labels as unknown[]).map(l => s(l)) :
+                  Array.isArray(m.labelIds) ? (m.labelIds as unknown[]).map(l => s(l)) : [],
+        } as Email;
+      });
+
+      if (append) {
+        setEmails(prev => {
+          const ids = new Set(prev.map(e => e.id));
+          const merged = [...prev, ...fetched.filter(e => !ids.has(e.id))];
+          saveCache(merged);
+          return merged;
+        });
+      } else {
+        setEmails(fetched);
+        saveCache(fetched);
+      }
+
+      const token = s(d.nextPageToken || "");
+      setNextPageToken(token || undefined);
+      setHasMore(!!token && fetched.length > 0);
+
       setRead(prev => {
         const next = new Set(prev);
         fetched.filter(e => e.read).forEach(e => next.add(e.id));
@@ -112,8 +203,14 @@ export default function GmailInboxView() {
         fetched.filter(e => e.starred).forEach(e => next.add(e.id));
         return next;
       });
-    } catch { setConnected(false); }
-    setLoading(false);
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") return; // Stale fetch — ignore
+      setConnected(false);
+      setBackgroundRefreshing(false);
+    }
+
+    if (append) setLoadingMore(false);
+    else setLoading(false);
   }, [folder]);
 
   useEffect(() => {
@@ -138,6 +235,8 @@ export default function GmailInboxView() {
     setSearch("");
     setSearchInput("");
     setSelected(null);
+    setNextPageToken(undefined);
+    setHasMore(false);
   };
 
   const toggleStar = (id: string) => {
@@ -170,10 +269,10 @@ export default function GmailInboxView() {
         setComposing(false);
         setComposeData({ to: "", subject: "", body: "" });
       } else {
-        toast.error(d.error || "Failed to send email");
+        toast.error(s(d.error) || "Failed to send email");
       }
-    } catch (err: any) {
-      toast.error("Send failed: " + err.message);
+    } catch (err: unknown) {
+      toast.error("Send failed: " + s(err instanceof Error ? err.message : err));
     }
     setSending(false);
   };
@@ -181,7 +280,9 @@ export default function GmailInboxView() {
   const filteredEmails = emails.filter(e => {
     if (!search) return true;
     const q = search.toLowerCase();
-    return e.subject.toLowerCase().includes(q) || e.from.toLowerCase().includes(q) || e.snippet.toLowerCase().includes(q);
+    return s(e.subject).toLowerCase().includes(q)
+      || s(e.from).toLowerCase().includes(q)
+      || s(e.snippet).toLowerCase().includes(q);
   });
 
   const unreadCount = emails.filter(e => !read.has(e.id)).length;
@@ -206,9 +307,25 @@ export default function GmailInboxView() {
     );
   }
 
+  // Safe body renderer — always ensures a string reaches dangerouslySetInnerHTML
+  function renderBody(email: Email) {
+    const bodyStr = s(email.body) || s(email.snippet) || "";
+    if (!bodyStr) return <p className="text-sm text-muted-foreground italic">No content</p>;
+    const isHtml = bodyStr.includes("<") && (bodyStr.includes("</") || bodyStr.includes("/>"));
+    return (
+      <div
+        className="text-sm text-foreground/90 leading-relaxed break-words"
+        dangerouslySetInnerHTML={{
+          __html: isHtml ? bodyStr : bodyStr.replace(/\n/g, "<br/>"),
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full overflow-hidden bg-background">
-      {/* Left sidebar — folders */}
+
+      {/* ── Folder sidebar ── */}
       <div className="w-52 flex-shrink-0 border-r border-border/60 flex flex-col">
         <div className="p-4 border-b border-border/60 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -248,7 +365,8 @@ export default function GmailInboxView() {
             variant="ghost"
             size="sm"
             className="w-full gap-2 text-xs text-muted-foreground justify-start"
-            onClick={() => fetchEmails()}
+            onClick={() => { setNextPageToken(undefined); fetchEmails(); }}
+            disabled={loading}
           >
             <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
             Refresh
@@ -256,16 +374,15 @@ export default function GmailInboxView() {
         </div>
       </div>
 
-      {/* Email list */}
+      {/* ── Email list ── */}
       <div className={cn("flex flex-col border-r border-border/60 transition-all duration-200", selected ? "w-72 flex-shrink-0" : "flex-1")}>
-        {/* Search bar */}
         <div className="p-3 border-b border-border/60">
           <form onSubmit={handleSearch} className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               value={searchInput}
               onChange={e => setSearchInput(e.target.value)}
-              placeholder="Search mail..."
+              placeholder="Search mail…"
               className="pl-8 h-8 text-sm bg-muted/40 border-border/60"
             />
             {searchInput && (
@@ -277,12 +394,19 @@ export default function GmailInboxView() {
           </form>
         </div>
 
-        {/* Email count header */}
         <div className="px-3 py-2 border-b border-border/40 flex items-center justify-between">
           <span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">
-            {search ? `Results for "${search}"` : FOLDERS.find(f => f.id === folder)?.label}
+            {search ? `"${search}"` : FOLDERS.find(f => f.id === folder)?.label}
           </span>
-          <span className="text-[11px] text-muted-foreground">{filteredEmails.length} emails</span>
+          <div className="flex items-center gap-1.5">
+            {backgroundRefreshing && (
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground/50">
+                <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+                Syncing
+              </span>
+            )}
+            <span className="text-[11px] text-muted-foreground">{filteredEmails.length} emails</span>
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
@@ -295,6 +419,9 @@ export default function GmailInboxView() {
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
               <Inbox className="h-8 w-8 opacity-30" />
               <span className="text-sm">No emails found</span>
+              <p className="text-xs opacity-60 text-center max-w-[180px]">
+                Your Gmail connection is active. Try refreshing or checking a different folder.
+              </p>
             </div>
           ) : (
             <div className="divide-y divide-border/40">
@@ -324,9 +451,9 @@ export default function GmailInboxView() {
                           <span className="text-[10px] text-muted-foreground flex-shrink-0">{formatDate(email.date)}</span>
                         </div>
                         <div className={cn("text-xs truncate mb-0.5", !isRead ? "font-medium text-foreground/90" : "text-foreground/70")}>
-                          {email.subject}
+                          {s(email.subject) || "(no subject)"}
                         </div>
-                        <div className="text-[11px] text-muted-foreground truncate">{email.snippet}</div>
+                        <div className="text-[11px] text-muted-foreground truncate">{s(email.snippet)}</div>
                       </div>
                     </div>
                     <button
@@ -339,12 +466,30 @@ export default function GmailInboxView() {
                   </button>
                 );
               })}
+
+              {/* Load More older emails */}
+              {hasMore && (
+                <div className="px-3 py-3 flex justify-center">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-xs text-muted-foreground"
+                    disabled={loadingMore}
+                    onClick={() => fetchEmails(search || folder, nextPageToken, true)}
+                  >
+                    {loadingMore
+                      ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading older emails…</>
+                      : <><ChevronDown className="h-3.5 w-3.5" />Load older emails</>
+                    }
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </ScrollArea>
       </div>
 
-      {/* Email detail panel */}
+      {/* ── Email detail panel ── */}
       <AnimatePresence>
         {selected && (
           <motion.div
@@ -353,21 +498,30 @@ export default function GmailInboxView() {
             exit={{ opacity: 0, x: 20 }}
             className="flex-1 flex flex-col overflow-hidden"
           >
-            {/* Detail header */}
             <div className="flex items-center gap-2 px-4 py-3 border-b border-border/60">
               <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setSelected(null)}>
                 <ChevronLeft className="h-4 w-4" />
               </Button>
               <div className="flex-1 min-w-0">
-                <h2 className="font-semibold text-sm truncate">{selected.subject}</h2>
+                <h2 className="font-semibold text-sm truncate">{s(selected.subject) || "(no subject)"}</h2>
               </div>
               <div className="flex items-center gap-1">
                 <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                  onClick={() => setComposeData({ to: extractEmail(selected.from), subject: `Re: ${selected.subject}`, body: `\n\n---\nOn ${new Date(selected.date).toLocaleDateString()}, ${selected.from} wrote:\n${selected.snippet}` })}>
+                  onClick={() => {
+                    setComposeData({
+                      to: extractEmail(selected.from),
+                      subject: `Re: ${s(selected.subject)}`,
+                      body: `\n\n---\nOn ${new Date(s(selected.date)).toLocaleDateString()}, ${s(selected.from)} wrote:\n${s(selected.snippet)}`,
+                    });
+                    setComposing(true);
+                  }}>
                   <Reply className="h-4 w-4" />
                 </Button>
                 <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                  onClick={() => { setComposeData({ to: "", subject: `Fwd: ${selected.subject}`, body: `\n\n---\n${selected.snippet}` }); setComposing(true); }}>
+                  onClick={() => {
+                    setComposeData({ to: "", subject: `Fwd: ${s(selected.subject)}`, body: `\n\n---\n${s(selected.snippet)}` });
+                    setComposing(true);
+                  }}>
                   <Forward className="h-4 w-4" />
                 </Button>
                 <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground"
@@ -381,7 +535,6 @@ export default function GmailInboxView() {
 
             <ScrollArea className="flex-1">
               <div className="p-6">
-                {/* From / To metadata */}
                 <div className="mb-6">
                   <div className="flex items-start gap-3">
                     <div className={cn("w-10 h-10 rounded-full bg-gradient-to-br flex items-center justify-center text-white font-bold text-sm flex-shrink-0", avatarColor(selected.from))}>
@@ -391,63 +544,60 @@ export default function GmailInboxView() {
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="font-semibold text-sm">{extractName(selected.from)}</span>
                         <span className="text-xs text-muted-foreground flex-shrink-0">
-                          {new Date(selected.date).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}
+                          {(() => {
+                            try {
+                              return new Date(s(selected.date)).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+                            } catch {
+                              return s(selected.date);
+                            }
+                          })()}
                         </span>
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5">
                         <span>{extractEmail(selected.from)}</span>
-                        {selected.to && <span className="ml-2">→ {selected.to.split(",").join(", ")}</span>}
+                        {s(selected.to) && (
+                          <span className="ml-2">→ {s(selected.to).split(",").join(", ")}</span>
+                        )}
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Email body */}
                 <div className="prose prose-sm dark:prose-invert max-w-none">
-                  {selected.body ? (
-                    <div
-                      className="text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap break-words"
-                      dangerouslySetInnerHTML={{
-                        __html: selected.body.includes("<")
-                          ? selected.body
-                          : selected.body.replace(/\n/g, "<br/>"),
-                      }}
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground italic">{selected.snippet || "No content"}</p>
-                  )}
+                  {renderBody(selected)}
                 </div>
 
-                {/* Labels */}
                 {selected.labels.length > 0 && (
                   <div className="mt-6 flex flex-wrap gap-1.5">
-                    {selected.labels.filter(l => !["INBOX", "UNREAD"].includes(l)).map(label => (
-                      <Badge key={label} variant="secondary" className="text-[10px] h-4 px-1.5 font-normal">
-                        {label.toLowerCase()}
-                      </Badge>
-                    ))}
+                    {selected.labels
+                      .map(l => s(l))
+                      .filter(l => !["INBOX", "UNREAD"].includes(l))
+                      .map(label => (
+                        <Badge key={label} variant="secondary" className="text-[10px] h-4 px-1.5 font-normal">
+                          {label.toLowerCase()}
+                        </Badge>
+                      ))}
                   </div>
                 )}
 
-                {/* Quick reply */}
                 <div className="mt-8 border border-border/60 rounded-xl p-4 bg-muted/20">
                   <p className="text-xs text-muted-foreground mb-2 font-medium">Quick Reply</p>
                   <Textarea
-                    placeholder={`Reply to ${extractName(selected.from)}...`}
+                    placeholder={`Reply to ${extractName(selected.from)}…`}
                     className="min-h-[80px] text-sm resize-none bg-transparent border-0 p-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                     value={composeData.to === extractEmail(selected.from) ? composeData.body : ""}
-                    onChange={e => setComposeData({ to: extractEmail(selected.from), subject: `Re: ${selected.subject}`, body: e.target.value })}
+                    onChange={e => setComposeData({
+                      to: extractEmail(selected.from),
+                      subject: `Re: ${s(selected.subject)}`,
+                      body: e.target.value,
+                    })}
                   />
                   <div className="flex justify-end mt-2">
                     <Button
                       size="sm"
                       className="gap-1.5"
                       disabled={sending || !composeData.body.trim()}
-                      onClick={() => {
-                        if (!composeData.body.trim()) return;
-                        setComposeData(prev => ({ ...prev, to: extractEmail(selected.from), subject: `Re: ${selected.subject}` }));
-                        sendEmail();
-                      }}
+                      onClick={sendEmail}
                     >
                       {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                       Send Reply
@@ -460,7 +610,7 @@ export default function GmailInboxView() {
         )}
       </AnimatePresence>
 
-      {/* Compose modal */}
+      {/* ── Compose modal ── */}
       <AnimatePresence>
         {composing && (
           <motion.div
@@ -469,7 +619,6 @@ export default function GmailInboxView() {
             exit={{ opacity: 0, y: 40, scale: 0.95 }}
             className="fixed bottom-4 right-4 w-[480px] bg-popover border border-border rounded-xl shadow-2xl z-50 overflow-hidden"
           >
-            {/* Compose header */}
             <div className="flex items-center justify-between px-4 py-2.5 bg-muted/40 border-b border-border/60">
               <span className="text-sm font-semibold">New Message</span>
               <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setComposing(false)}>
@@ -514,7 +663,12 @@ export default function GmailInboxView() {
                 {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                 Send
               </Button>
-              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => { setComposing(false); setComposeData({ to: "", subject: "", body: "" }); }}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={() => { setComposing(false); setComposeData({ to: "", subject: "", body: "" }); }}
+              >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </div>
