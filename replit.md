@@ -75,13 +75,38 @@ Restart order: ports → `artifacts/api-server: API Server` → `artifacts/nexus
 - `GET /api/composio/status` — Composio account status
 - `GET /api/composio/apps` — all 1,033 Composio apps
 - `GET /api/composio/connections` — user OAuth connections
+- `GET /api/composio/connections/health` — health stats (total/active/expired) — MUST be before `:id` routes
+- `DELETE /api/composio/connections/stale/cleanup` — delete EXPIRED connections — MUST be before `:id` routes
+- `GET /api/composio/connections/:id/status` — poll single connection status (INITIATED→ACTIVE)
 - `POST /api/composio/connections/initiate` — start OAuth flow
 - `DELETE /api/composio/connections/:id` — disconnect app
 - `GET /api/composio/integrations` — list integrations
 - `GET /api/composio/actions` — browse Composio actions
-- `POST /api/composio/execute` — execute a Composio action
+- `POST /api/composio/actions/execute` — execute a Composio action (with NO_ACTIVE_CONNECTION error handling)
+- `GET /api/composio/calendar/events` — sync calendar events via multi-action fallback chain
 - `GET /api/composio/triggers` — list triggers
+- `GET /api/composio/triggers/instances` — list active trigger subscriptions
+- `POST /api/composio/triggers/:name/subscribe` — subscribe to a trigger
+- `DELETE /api/composio/triggers/:name/unsubscribe` — unsubscribe from trigger
+- `POST /api/composio/webhook` — receive Composio trigger events (stores in ring buffer, pushes to SSE)
+- `GET /api/composio/webhook/events` — fetch last 100 webhook events from ring buffer
+- `GET /api/composio/webhook/stream` — SSE real-time webhook event stream (replaces polling)
+- `GET /api/composio/webhook/config` — returns webhook URL for Composio dashboard setup
 - `GET /api/composio/mcp` — get Composio MCP server config
+
+### Agent Tool Execution (AgentsPanel)
+- LLM emits `TOOL_CALL: ACTION_NAME {...}` in response → auto-detected and executed via `/api/composio/actions/execute`
+- After successful execution: `synthesizeToolResult()` calls LLM again with tool output → produces human-readable summary appended to conversation
+- Manual "Execute" button on pending tool calls also triggers synthesis
+- If app not connected: toast with link to Settings → Integrations
+- `agent`, `conversationSnapshot`, `providerId` all passed through for full context
+
+### Triggers & Webhooks (TriggersSection)
+- Switched from 4s polling to true SSE (`EventSource`) via `/api/composio/webhook/stream`
+- On SSE connect: server sends `init` event with existing ring buffer (last 20 events)
+- On new webhook POST: server pushes `event` message to all SSE clients instantly
+- SSE error fallback: falls back to one-time REST fetch of `/api/composio/webhook/events`
+- "● Live" / "○ Paused" toggle controls SSE connection lifecycle
 
 ### Composio Config
 - **Base URL**: `https://backend.composio.dev/api/v1`

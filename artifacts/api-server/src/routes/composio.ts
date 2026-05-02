@@ -19,6 +19,9 @@ const WEBHOOK_EVENTS: Array<{
 }> = [];
 const MAX_WEBHOOK_EVENTS = 100;
 
+// SSE clients for real-time webhook event streaming
+const SSE_CLIENTS = new Set<import("express").Response>();
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 function getKey(): string {
@@ -75,6 +78,7 @@ const CURATED_ACTIONS: Record<string, Array<{
     { name: "GMAIL_CREATE_EMAIL_DRAFT", displayName: "Create Draft", description: "Save an email as a draft", parameters: ["to", "subject", "body"] },
   ],
   googlecalendar: [
+    { name: "GOOGLECALENDAR_LIST_EVENTS", displayName: "List Events", description: "List upcoming calendar events", parameters: ["calendar_id", "time_min", "time_max", "max_results"] },
     { name: "GOOGLECALENDAR_CREATE_EVENT", displayName: "Create Event", description: "Create a calendar event", parameters: ["summary", "start_datetime", "end_datetime", "description", "attendees"] },
     { name: "GOOGLECALENDAR_FIND_FREE_SLOTS", displayName: "Find Free Slots", description: "Find available time slots", parameters: ["time_min", "time_max", "calendars"] },
     { name: "GOOGLECALENDAR_DELETE_EVENT", displayName: "Delete Event", description: "Remove an event from calendar", parameters: ["event_id", "calendar_id"] },
@@ -203,22 +207,18 @@ router.get("/connections", async (req: Request, res: Response) => {
   const entityId = (req.query.entityId as string) || "default";
   const appName = req.query.appName as string | undefined;
   try {
-    // v3 uses user_uuid + optional toolkit
     const params = new URLSearchParams({ user_uuid: entityId, limit: "50" });
     if (appName) params.set("toolkit", appName);
     const r = await v3(`/connected_accounts?${params}`);
     if (!r.ok) {
-      // fallback to v1
       const p2 = new URLSearchParams({ entityId });
       if (appName) p2.set("appName", appName);
       const r2 = await v1(`/connectedAccounts?${p2}`);
       if (!r2.ok) { res.json({ items: [], total: 0 }); return; }
-      const d2 = await safeJson(r2);
-      res.json(d2);
+      res.json(await safeJson(r2));
       return;
     }
     const data = await safeJson(r);
-    // Normalize v3 response to match v1 shape
     const items = (data.items || []).map((c: any) => ({
       id: c.id,
       uuid: c.deprecated?.uuid,
@@ -230,6 +230,37 @@ router.get("/connections", async (req: Request, res: Response) => {
       authScheme: c.authScheme || c.auth_config?.auth_scheme,
     }));
     res.json({ items, total: data.total || items.length });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// GET connection health dashboard — MUST be before /connections/:id
+router.get("/connections/health", async (_req: Request, res: Response) => {
+  try {
+    const r = await v3(`/connected_accounts?limit=100`);
+    if (!r.ok) { res.status(500).json({ error: "Could not fetch connections" }); return; }
+    const data = await safeJson(r);
+    const now = Date.now();
+    const items = (data.items || []).map((c: any) => ({
+      id: c.id,
+      appName: c.toolkit?.slug || "unknown",
+      status: c.status,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      authScheme: c.authScheme,
+      ageMinutes: c.created_at ? Math.round((now - new Date(c.created_at).getTime()) / 60000) : null,
+    }));
+    const byStatus = items.reduce((acc: Record<string, number>, c: any) => {
+      acc[c.status] = (acc[c.status] || 0) + 1;
+      return acc;
+    }, {});
+    res.json({
+      total: items.length,
+      byStatus,
+      active: byStatus["ACTIVE"] || 0,
+      expired: byStatus["EXPIRED"] || 0,
+      initiated: byStatus["INITIATED"] || 0,
+      items,
+    });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
@@ -439,17 +470,68 @@ router.post("/connections/initiate", async (req: Request, res: Response) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE connection
+// DELETE stale INITIATED connections — MUST be before DELETE /connections/:id
+router.delete("/connections/stale/cleanup", async (req: Request, res: Response) => {
+  const staleMinutes = parseInt(req.query.staleMinutes as string || "5");
+  try {
+    const r = await v3(`/connected_accounts?limit=100`);
+    if (!r.ok) { res.json({ deleted: 0, error: "Could not list connections" }); return; }
+    const data = await safeJson(r);
+    const now = Date.now();
+    const stale = (data.items || []).filter((c: any) => {
+      if (c.status !== "INITIATED") return false;
+      const age = (now - new Date(c.created_at).getTime()) / 60000;
+      return age > staleMinutes;
+    });
+    const deleted: string[] = [];
+    for (const conn of stale) {
+      const dr = await v3(`/connected_accounts/${conn.id}`, { method: "DELETE" });
+      if (dr.ok || dr.status === 204) deleted.push(conn.id);
+    }
+    res.json({ deleted: deleted.length, ids: deleted, scanned: data.items?.length || 0 });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE single connection by ID — must be AFTER stale/cleanup
 router.delete("/connections/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    // Try v3 first
     const r = await v3(`/connected_accounts/${id}`, { method: "DELETE" });
     if (r.ok || r.status === 204) { res.status(204).end(); return; }
-    // Fallback v1
     const r2 = await v1(`/connectedAccounts/${id}`, { method: "DELETE" });
     if (!r2.ok) { const e = await safeJson(r2); res.status(r2.status).json(e); return; }
     res.status(204).end();
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// GET connection health dashboard — all connections with status breakdown
+router.get("/connections/health", async (_req: Request, res: Response) => {
+  try {
+    const r = await v3(`/connected_accounts?limit=100`);
+    if (!r.ok) { res.status(500).json({ error: "Could not fetch connections" }); return; }
+    const data = await safeJson(r);
+    const now = Date.now();
+    const items = (data.items || []).map((c: any) => ({
+      id: c.id,
+      appName: c.toolkit?.slug || "unknown",
+      status: c.status,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      authScheme: c.authScheme,
+      ageMinutes: c.created_at ? Math.round((now - new Date(c.created_at).getTime()) / 60000) : null,
+    }));
+    const byStatus = items.reduce((acc: Record<string, number>, c: any) => {
+      acc[c.status] = (acc[c.status] || 0) + 1;
+      return acc;
+    }, {});
+    res.json({
+      total: items.length,
+      byStatus,
+      active: byStatus["ACTIVE"] || 0,
+      expired: byStatus["EXPIRED"] || 0,
+      initiated: byStatus["INITIATED"] || 0,
+      items,
+    });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
@@ -610,6 +692,23 @@ router.post("/actions/execute", async (req: Request, res: Response) => {
 
 // ─── Calendar Events ──────────────────────────────────────────────────────────
 
+function normalizeCalendarEvents(data: any, provider: string): any[] {
+  const raw = data?.response_data || data?.data || data || {};
+  const items: any[] = raw.items || raw.events || raw.value || raw.calendars || [];
+  return items.map((e: any) => ({
+    id: e.id || e.iCalUID || String(Math.random()),
+    title: e.summary || e.subject || e.title || "Untitled Event",
+    startTime: e.start?.dateTime || e.start?.date || e.start || e.startDateTime || e.start_time,
+    endTime: e.end?.dateTime || e.end?.date || e.end || e.endDateTime || e.end_time,
+    description: e.description || e.bodyPreview || e.body?.content || "",
+    location: e.location?.displayName || e.location || "",
+    attendees: (e.attendees || []).map((a: any) => a.email || a.emailAddress?.address || a),
+    isAllDay: !!(e.start?.date && !e.start?.dateTime),
+    status: e.status || "confirmed",
+    provider,
+  })).filter((e: any) => e.startTime);
+}
+
 // GET /api/composio/calendar/events — fetch real events from Google Calendar or Outlook
 router.get("/calendar/events", async (req: Request, res: Response) => {
   const entityId = (req.query.entityId as string) || "default";
@@ -618,60 +717,52 @@ router.get("/calendar/events", async (req: Request, res: Response) => {
   const timeMax = (req.query.timeMax as string) || new Date(Date.now() + 30 * 86400000).toISOString();
 
   try {
-    // Check if connection is ACTIVE
     const lookup = await v3(`/connected_accounts?user_uuid=${entityId}&toolkit=${provider}&status=ACTIVE&limit=5`);
-    if (!lookup.ok) {
-      res.json({ events: [], connected: false, error: "Could not check connections" });
-      return;
-    }
+    if (!lookup.ok) { res.json({ events: [], connected: false, error: "Could not check connections" }); return; }
     const ld = await safeJson(lookup);
     const conn = (ld.items || [])[0];
-
-    if (!conn) {
-      res.json({ events: [], connected: false, provider });
-      return;
-    }
+    if (!conn) { res.json({ events: [], connected: false, provider }); return; }
 
     const connUuid = conn.deprecated?.uuid || conn.id;
-    const actionName = provider === "googlecalendar" ? "GOOGLECALENDAR_FIND_FREE_SLOTS" : "OUTLOOK_GET_CALENDAR_EVENTS";
-    const input = provider === "googlecalendar"
-      ? { time_min: timeMin, time_max: timeMax }
-      : { start_date: timeMin, end_date: timeMax };
+    const connShortId = conn.id;
 
-    const r = await v2(`/actions/${actionName}/execute`, {
-      method: "POST",
-      body: JSON.stringify({ input, connectedAccountId: connUuid }),
-    });
+    // Try multiple action names in order of likelihood
+    const candidates: Array<{ action: string; input: Record<string, unknown> }> =
+      provider === "googlecalendar"
+        ? [
+            { action: "GOOGLECALENDAR_LIST_EVENTS", input: { calendar_id: "primary", time_min: timeMin, time_max: timeMax, max_results: 50 } },
+            { action: "GOOGLECALENDAR_GET_EVENTS", input: { calendar_id: "primary", time_min: timeMin, time_max: timeMax } },
+            { action: "GOOGLECALENDAR_FIND_FREE_SLOTS", input: { time_min: timeMin, time_max: timeMax } },
+          ]
+        : [
+            { action: "OUTLOOK_GET_CALENDAR_EVENTS", input: { start_date: timeMin, end_date: timeMax } },
+            { action: "OUTLOOK_LIST_CALENDAR_EVENTS", input: { start: timeMin, end: timeMax } },
+          ];
 
-    if (!r.ok) {
-      // Try fallback action name
-      const alt = provider === "googlecalendar" ? "GOOGLECALENDAR_GET_CURRENT_DATE_TIME" : "OUTLOOK_LIST_EMAILS";
-      const r2 = await v2(`/actions/${alt}/execute`, {
+    for (const { action, input } of candidates) {
+      // Try v3 tools endpoint first
+      const r3 = await v3(`/tools/execute/${action}`, {
         method: "POST",
-        body: JSON.stringify({ input: {}, connectedAccountId: connUuid }),
+        body: JSON.stringify({ arguments: input, version: "latest", connected_account_id: connShortId }),
       });
-      const d2 = await safeJson(r2);
-      res.json({ events: [], connected: true, provider, rawResponse: d2, warning: "Primary action failed, used fallback" });
-      return;
+      if (r3.ok) {
+        const d3 = await safeJson(r3);
+        const events = normalizeCalendarEvents(d3, provider);
+        if (events.length > 0) { res.json({ events, connected: true, provider, total: events.length, action, engine: "v3" }); return; }
+      }
+      // v2 fallback with UUID
+      const r2 = await v2(`/actions/${action}/execute`, {
+        method: "POST",
+        body: JSON.stringify({ input, connectedAccountId: connUuid }),
+      });
+      if (r2.ok) {
+        const d2 = await safeJson(r2);
+        const events = normalizeCalendarEvents(d2, provider);
+        if (events.length > 0) { res.json({ events, connected: true, provider, total: events.length, action, engine: "v2" }); return; }
+      }
     }
 
-    const data = await safeJson(r);
-    // Normalize events from Composio response
-    const raw = data?.response_data || data?.data || data || {};
-    const items = raw.items || raw.events || raw.value || [];
-    const events = items.map((e: any) => ({
-      id: e.id || e.iCalUID || String(Math.random()),
-      title: e.summary || e.subject || e.title || "Untitled Event",
-      startTime: e.start?.dateTime || e.start?.date || e.start || e.startDateTime,
-      endTime: e.end?.dateTime || e.end?.date || e.end || e.endDateTime,
-      description: e.description || e.body?.content || "",
-      location: e.location || "",
-      attendees: (e.attendees || []).map((a: any) => a.email || a.emailAddress?.address || a),
-      isAllDay: !!(e.start?.date && !e.start?.dateTime),
-      provider,
-    }));
-
-    res.json({ events, connected: true, provider, total: events.length });
+    res.json({ events: [], connected: true, provider, total: 0, warning: "No events found in the specified date range" });
   } catch (err: any) {
     res.json({ events: [], connected: false, error: err.message });
   }
@@ -792,7 +883,6 @@ router.delete("/triggers/instances/:id", async (req: Request, res: Response) => 
 
 // POST /api/composio/webhook — receives trigger events from Composio
 router.post("/webhook", async (req: Request, res: Response) => {
-  // Acknowledge immediately (Composio expects fast 200)
   res.status(200).json({ received: true });
 
   const body = req.body || {};
@@ -805,16 +895,40 @@ router.post("/webhook", async (req: Request, res: Response) => {
     receivedAt: new Date().toISOString(),
   };
 
-  // Push to ring buffer
   WEBHOOK_EVENTS.unshift(event);
-  if (WEBHOOK_EVENTS.length > MAX_WEBHOOK_EVENTS) {
-    WEBHOOK_EVENTS.splice(MAX_WEBHOOK_EVENTS);
+  if (WEBHOOK_EVENTS.length > MAX_WEBHOOK_EVENTS) WEBHOOK_EVENTS.splice(MAX_WEBHOOK_EVENTS);
+
+  // Push to all SSE clients in real-time
+  const ssePayload = `data: ${JSON.stringify({ type: "event", event })}\n\n`;
+  for (const client of SSE_CLIENTS) {
+    try { client.write(ssePayload); } catch { SSE_CLIENTS.delete(client); }
   }
 });
 
 // GET /api/composio/webhook/events — serve recent events
 router.get("/webhook/events", (_req: Request, res: Response) => {
   res.json({ events: WEBHOOK_EVENTS, total: WEBHOOK_EVENTS.length });
+});
+
+// GET /api/composio/webhook/stream — SSE real-time webhook event stream
+router.get("/webhook/stream", (req: Request, res: Response) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+
+  // Send current event buffer on connect
+  res.write(`data: ${JSON.stringify({ type: "init", events: WEBHOOK_EVENTS.slice(0, 20) })}\n\n`);
+
+  SSE_CLIENTS.add(res);
+
+  // Heartbeat every 20s to keep connection alive
+  const hb = setInterval(() => {
+    try { res.write(`data: ${JSON.stringify({ type: "heartbeat", ts: Date.now() })}\n\n`); }
+    catch { clearInterval(hb); SSE_CLIENTS.delete(res); }
+  }, 20000);
+
+  req.on("close", () => { clearInterval(hb); SSE_CLIENTS.delete(res); });
 });
 
 // GET /api/composio/webhook/config — instructions for setting up webhook

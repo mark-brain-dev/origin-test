@@ -307,148 +307,273 @@ function NotificationsSection() {
 }
 
 /* ─────────────────────────── INTEGRATIONS ─────────────────────────── */
-const INTEGRATION_APPS = [
-  { key: "googlecalendar", name: "Google Calendar", desc: "Sync meetings and events to your workspace", icon: "📅" },
-  { key: "slack", name: "Slack", desc: "Get notifications and share pages", icon: "💬" },
-  { key: "github", name: "GitHub", desc: "Link commits and PRs to pages", icon: "🐙" },
-  { key: "linear", name: "Linear", desc: "Sync issues as database rows", icon: "📐" },
-  { key: "figma", name: "Figma", desc: "Embed designs in pages", icon: "🎨" },
-  { key: "googledrive", name: "Google Drive", desc: "Attach and embed Drive files in pages", icon: "📁" },
-  { key: "gmail", name: "Gmail", desc: "Read, send and manage emails", icon: "📧" },
-  { key: "notion", name: "Notion", desc: "Import and sync your Notion workspace", icon: "📋" },
-  { key: "zoom", name: "Zoom", desc: "Schedule and manage Zoom meetings", icon: "📹" },
-  { key: "outlook", name: "Outlook", desc: "Connect Microsoft email and calendar", icon: "🟦" },
-];
+const APP_LOGOS: Record<string, string> = {
+  github: "🐙", slack: "💬", gmail: "📧", googlecalendar: "📅",
+  notion: "📋", linear: "📐", jira: "🔵", asana: "⚙️", trello: "📊",
+  hubspot: "🟠", salesforce: "☁️", stripe: "💳", twitter: "🐦",
+  discord: "💜", zoom: "📹", dropbox: "📦", googledrive: "📁",
+  figma: "🎨", airtable: "📊", supabase: "⚡", openai: "🤖",
+  serpapi: "🔍", clickup: "🟣", one_drive: "☁️", outlook: "📬",
+  elevenlabs: "🎙️", perplexityai: "🔮", googledocs: "📄",
+  googlesheets: "📊", googletasks: "✅", youtube: "▶️",
+};
+
+function formatAge(minutes: number | null): string {
+  if (minutes === null) return "—";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1440) return `${Math.round(minutes / 60)}h ago`;
+  return `${Math.round(minutes / 1440)}d ago`;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const cfg = {
+    ACTIVE: { cls: "bg-green-500/15 text-green-400 border-green-500/30", dot: "bg-green-400" },
+    EXPIRED: { cls: "bg-red-500/15 text-red-400 border-red-500/30", dot: "bg-red-400" },
+    INITIATED: { cls: "bg-amber-500/15 text-amber-400 border-amber-500/30", dot: "bg-amber-400 animate-pulse" },
+    FAILED: { cls: "bg-red-500/15 text-red-400 border-red-500/30", dot: "bg-red-400" },
+  }[status] || { cls: "bg-muted text-muted-foreground border-border", dot: "bg-muted-foreground" };
+  return (
+    <span className={cn("flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border font-medium", cfg.cls)}>
+      <span className={cn("w-1.5 h-1.5 rounded-full", cfg.dot)} />
+      {status.charAt(0) + status.slice(1).toLowerCase()}
+    </span>
+  );
+}
 
 function IntegrationsSection() {
-  const [connections, setConnections] = useState<any[]>([]);
-  const [connecting, setConnecting] = useState<string | null>(null);
-  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [health, setHealth] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-
+  const [refreshing, setRefreshing] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [reconnecting, setReconnecting] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | "ACTIVE" | "EXPIRED" | "INITIATED">("all");
   const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-  const fetchConnections = useCallback(async () => {
+  const fetchHealth = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    else setRefreshing(true);
     try {
-      const r = await fetch(`${BASE_URL}/api/composio/connections?entityId=default`);
-      if (r.ok) { const d = await r.json(); setConnections(d.items || []); }
+      const r = await fetch(`${BASE_URL}/api/composio/connections/health`);
+      if (r.ok) setHealth(await r.json());
     } catch { /* ignore */ }
     setLoading(false);
+    setRefreshing(false);
   }, [BASE_URL]);
 
-  useEffect(() => { fetchConnections(); }, [fetchConnections]);
+  const cleanStale = useCallback(async () => {
+    setCleaning(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/composio/connections/stale/cleanup`, { method: "DELETE" });
+      if (r.ok) {
+        const d = await r.json();
+        toast.success(`Cleaned up ${d.deleted} stale connection${d.deleted !== 1 ? "s" : ""}`);
+        await fetchHealth(true);
+      }
+    } catch { toast.error("Cleanup failed"); }
+    setCleaning(false);
+  }, [BASE_URL, fetchHealth]);
 
-  const isConnected = (key: string) =>
-    connections.some((c: any) => c.appName?.toLowerCase() === key.toLowerCase() && c.status === "ACTIVE");
+  useEffect(() => {
+    cleanStale().then(() => fetchHealth());
+  }, [cleanStale, fetchHealth]);
 
-  const getConnectionId = (key: string) =>
-    connections.find((c: any) => c.appName?.toLowerCase() === key.toLowerCase() && c.status === "ACTIVE")?.id;
-
-  const handleConnect = async (app: typeof INTEGRATION_APPS[0]) => {
-    setConnecting(app.key);
+  const handleReconnect = async (conn: any) => {
+    setReconnecting(conn.id);
     try {
       const r = await fetch(`${BASE_URL}/api/composio/connections/initiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ appName: app.key, entityId: "default" }),
+        body: JSON.stringify({ appName: conn.appName, entityId: "default" }),
       });
       const data = await r.json();
-      if (!r.ok) { toast.error(data.error || `Failed to connect ${app.name}`); setConnecting(null); return; }
-
+      if (!r.ok) {
+        if (data.noAuth) {
+          toast.info(`${conn.appName} doesn't need authorization`);
+        } else {
+          toast.error(data.error || "Failed to reconnect");
+        }
+        return;
+      }
       if (data.redirectUrl) {
-        const popup = window.open(data.redirectUrl, `nexus_oauth_${app.key}`, "width=600,height=700,scrollbars=yes");
-        toast.info(`Connecting ${app.name}…`, { description: "Complete the authorization in the popup", duration: 8000 });
+        const popup = window.open(data.redirectUrl, `reconnect_${conn.appName}`, "width=600,height=700,scrollbars=yes");
+        toast.info(`Reconnecting ${conn.appName}…`, { description: "Complete authorization in the popup", duration: 8000 });
         const poll = setInterval(async () => {
           if (!popup || popup.closed) {
             clearInterval(poll);
-            await fetchConnections();
+            await fetchHealth(true);
           }
         }, 1000);
-      } else {
-        toast.success(`${app.name} connected`);
-        await fetchConnections();
       }
     } catch (err: any) {
-      toast.error(err.message || `Failed to connect ${app.name}`);
+      toast.error(err.message);
     }
-    setConnecting(null);
+    setReconnecting(null);
   };
 
-  const handleDisconnect = async (app: typeof INTEGRATION_APPS[0]) => {
-    const id = getConnectionId(app.key);
-    if (!id) return;
-    setDisconnecting(app.key);
+  const handleDisconnect = async (conn: any) => {
+    setDisconnecting(conn.id);
     try {
-      const r = await fetch(`${BASE_URL}/api/composio/connections/${id}`, { method: "DELETE" });
+      const r = await fetch(`${BASE_URL}/api/composio/connections/${conn.id}`, { method: "DELETE" });
       if (r.ok || r.status === 204) {
-        setConnections((prev) => prev.filter((c: any) => c.id !== id));
-        toast.success(`${app.name} disconnected`);
-      } else { toast.error("Failed to disconnect"); }
+        toast.success(`${conn.appName} disconnected`);
+        await fetchHealth(true);
+      } else {
+        toast.error("Failed to disconnect");
+      }
     } catch { toast.error("Failed to disconnect"); }
     setDisconnecting(null);
   };
 
+  const items: any[] = health?.items || [];
+  const filtered = statusFilter === "all" ? items : items.filter((c: any) => c.status === statusFilter);
+
   return (
     <ScrollArea className="h-full">
-      <div className="p-8 max-w-2xl mx-auto space-y-8">
-        <div>
-          <h2 className="text-xl font-bold">Integrations</h2>
-          <p className="text-sm text-muted-foreground mt-1">Connect your favorite tools to Nexus OS via secure OAuth</p>
+      <div className="p-8 max-w-3xl mx-auto space-y-6">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-xl font-bold">Connection Health</h2>
+            <p className="text-sm text-muted-foreground mt-1">Monitor and manage all your Composio connections</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={cleanStale} disabled={cleaning}>
+              {cleaning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+              Clean Stale
+            </Button>
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={() => fetchHealth(true)} disabled={refreshing}>
+              <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+              Refresh
+            </Button>
+          </div>
         </div>
+
         {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          <div className="flex items-center justify-center py-16">
+            <div className="text-center">
+              <Loader2 className="h-6 w-6 animate-spin text-primary mx-auto mb-3" />
+              <p className="text-xs text-muted-foreground">Fetching connection health…</p>
+            </div>
           </div>
         ) : (
-          <div className="space-y-2">
-            {INTEGRATION_APPS.map((app) => {
-              const connected = isConnected(app.key);
-              const busy = connecting === app.key || disconnecting === app.key;
-              return (
-                <div key={app.key} className={cn(
-                  "flex items-center gap-4 p-4 rounded-xl border transition-colors",
-                  connected ? "border-green-500/30 bg-green-500/5" : "border-border bg-card"
-                )}>
-                  <div className="text-2xl">{app.icon}</div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm">{app.name}</div>
-                    <div className="text-xs text-muted-foreground">{app.desc}</div>
-                    {connected && (
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                        <span className="text-[10px] text-green-400">Connected via Composio OAuth</span>
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    variant={connected ? "outline" : "default"}
-                    disabled={busy}
-                    className={cn(
-                      "h-8 text-xs gap-1.5",
-                      connected
-                        ? "text-muted-foreground hover:text-destructive hover:border-destructive/40"
-                        : "bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0"
-                    )}
-                    onClick={() => connected ? handleDisconnect(app) : handleConnect(app)}
-                  >
-                    {busy
-                      ? <Loader2 className="h-3 w-3 animate-spin" />
-                      : connected
-                        ? <><Check className="h-3 w-3" />Connected</>
-                        : "Connect"}
-                  </Button>
+          <>
+            <div className="grid grid-cols-4 gap-3">
+              {[
+                { label: "Total", value: health?.total ?? 0, color: "text-foreground" },
+                { label: "Active", value: health?.active ?? 0, color: "text-green-400" },
+                { label: "Expired", value: health?.expired ?? 0, color: "text-red-400" },
+                { label: "Pending", value: health?.initiated ?? 0, color: "text-amber-400" },
+              ].map((s) => (
+                <div key={s.label} className="p-4 rounded-xl border border-border/60 bg-card text-center">
+                  <div className={cn("text-2xl font-bold", s.color)}>{s.value}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{s.label}</div>
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {(["all", "ACTIVE", "EXPIRED", "INITIATED"] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setStatusFilter(f)}
+                  className={cn(
+                    "text-xs px-3 py-1.5 rounded-lg border transition-colors capitalize",
+                    statusFilter === f
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "border-border/60 text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {f === "all" ? "All" : f === "INITIATED" ? "Pending" : f.charAt(0) + f.slice(1).toLowerCase()}
+                  {f !== "all" && health?.byStatus?.[f] != null && (
+                    <span className="ml-1 opacity-60">({health.byStatus[f]})</span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {filtered.length === 0 ? (
+              <div className="text-center py-10 text-muted-foreground">
+                <Activity className="h-8 w-8 mx-auto mb-3 opacity-30" />
+                <p className="text-sm">No connections found</p>
+                <p className="text-xs mt-1">Go to Marketplace to connect apps</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {filtered.map((conn: any) => {
+                  const logo = APP_LOGOS[conn.appName] || "🔗";
+                  const isReconnecting = reconnecting === conn.id;
+                  const isDisconnecting = disconnecting === conn.id;
+                  return (
+                    <motion.div
+                      key={conn.id}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={cn(
+                        "flex items-center gap-3 p-3.5 rounded-xl border transition-all",
+                        conn.status === "ACTIVE" ? "border-green-500/20 bg-green-500/5"
+                        : conn.status === "EXPIRED" ? "border-red-500/20 bg-red-500/5"
+                        : conn.status === "INITIATED" ? "border-amber-500/20 bg-amber-500/5"
+                        : "border-border/60 bg-card"
+                      )}
+                    >
+                      <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center text-lg flex-shrink-0">
+                        {logo}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm text-foreground capitalize">
+                            {conn.appName?.replace(/_/g, " ") || "Unknown"}
+                          </span>
+                          <StatusBadge status={conn.status} />
+                        </div>
+                        <div className="flex items-center gap-3 mt-0.5">
+                          <span className="text-[11px] text-muted-foreground font-mono">
+                            {conn.id}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {formatAge(conn.ageMinutes)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {conn.status !== "ACTIVE" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs gap-1 text-violet-400 border-violet-500/30 hover:bg-violet-500/10"
+                            disabled={isReconnecting || isDisconnecting}
+                            onClick={() => handleReconnect(conn)}
+                          >
+                            {isReconnecting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                            Reconnect
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                          disabled={isDisconnecting || isReconnecting}
+                          onClick={() => handleDisconnect(conn)}
+                        >
+                          {isDisconnecting ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+                        </Button>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Connections are secured through <strong>Composio OAuth</strong>. Expired connections must be re-authorized.
+                Stale pending connections (older than 5 min) are auto-removed on page load.
+                Visit <strong>Marketplace</strong> to add 250+ new integrations.
+              </p>
+            </div>
+          </>
         )}
-        <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            All connections are secured through <strong>Composio OAuth</strong>. Your credentials are never stored in Nexus OS — they are managed by Composio's secure auth infrastructure.
-            Visit the <strong>Marketplace</strong> to connect 250+ additional apps.
-          </p>
-        </div>
       </div>
     </ScrollArea>
   );
@@ -1418,36 +1543,48 @@ function TriggersSection() {
   const [webhookUrl, setWebhookUrl] = useState<string>("");
   const [webhookExpanded, setWebhookExpanded] = useState(true);
   const [expandedEvent, setExpandedEvent] = useState<string | null>(null);
-  const [livePolling, setLivePolling] = useState(true);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [liveStreaming, setLiveStreaming] = useState(true);
+  const sseRef = useRef<EventSource | null>(null);
 
-  const fetchWebhookData = useCallback(async () => {
-    try {
-      const [evtRes, cfgRes] = await Promise.all([
-        fetch(`${BASE_URL}/api/composio/webhook/events`),
-        fetch(`${BASE_URL}/api/composio/webhook/config`),
-      ]);
-      if (evtRes.ok) {
-        const d = await evtRes.json();
-        setWebhookEvents(d.events || []);
-      }
-      if (cfgRes.ok) {
-        const d = await cfgRes.json();
-        setWebhookUrl(d.webhookUrl || "");
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  // Live poll webhook events every 4s
+  // Fetch webhook URL on mount
   useEffect(() => {
-    if (livePolling) {
-      fetchWebhookData();
-      pollRef.current = setInterval(fetchWebhookData, 4000);
-    } else {
-      if (pollRef.current) clearInterval(pollRef.current);
-    }
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [livePolling, fetchWebhookData]);
+    fetch(`${BASE_URL}/api/composio/webhook/config`).then(r => r.ok ? r.json() : null).then(d => {
+      if (d?.webhookUrl) setWebhookUrl(d.webhookUrl);
+    }).catch(() => {});
+  }, [BASE_URL]);
+
+  // SSE stream for real-time webhook events
+  useEffect(() => {
+    if (!liveStreaming) { sseRef.current?.close(); sseRef.current = null; return; }
+
+    const es = new EventSource(`${BASE_URL}/api/composio/webhook/stream`);
+    sseRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "init") {
+          setWebhookEvents(msg.events || []);
+        } else if (msg.type === "event" && msg.event) {
+          setWebhookEvents(prev => {
+            const exists = prev.some(x => x.id === msg.event.id);
+            if (exists) return prev;
+            return [msg.event, ...prev].slice(0, 100);
+          });
+        }
+      } catch { /* ignore malformed */ }
+    };
+
+    es.onerror = () => {
+      // On error, fall back to polling once
+      es.close();
+      fetch(`${BASE_URL}/api/composio/webhook/events`).then(r => r.ok ? r.json() : null).then(d => {
+        if (d?.events) setWebhookEvents(d.events);
+      }).catch(() => {});
+    };
+
+    return () => { es.close(); sseRef.current = null; };
+  }, [liveStreaming, BASE_URL]);
 
   const copyWebhookUrl = () => {
     navigator.clipboard.writeText(webhookUrl).then(() => toast.success("Webhook URL copied!"));
@@ -1568,7 +1705,7 @@ function TriggersSection() {
               Subscribe to real-time events from your connected apps. {triggers.length} triggers available.
             </p>
           </div>
-          <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={() => { fetchAll(); fetchWebhookData(); }}>
+          <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={() => { fetchAll(); }}>
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
           </Button>
@@ -1593,7 +1730,7 @@ function TriggersSection() {
                       {webhookEvents.length} events
                     </span>
                   )}
-                  {livePolling && (
+                  {liveStreaming && (
                     <span className="flex items-center gap-1 text-[10px] text-green-400">
                       <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
                       live
@@ -1605,15 +1742,15 @@ function TriggersSection() {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={(e) => { e.stopPropagation(); setLivePolling(v => !v); }}
+                onClick={(e) => { e.stopPropagation(); setLiveStreaming(v => !v); }}
                 className={cn(
                   "text-[10px] px-2 py-0.5 rounded-full border transition-colors",
-                  livePolling
+                  liveStreaming
                     ? "border-green-500/30 text-green-400 bg-green-500/10"
                     : "border-border/60 text-muted-foreground"
                 )}
               >
-                {livePolling ? "● Live" : "○ Paused"}
+                {liveStreaming ? "● Live" : "○ Paused"}
               </button>
               {webhookExpanded
                 ? <ChevronUp className="h-4 w-4 text-muted-foreground" />

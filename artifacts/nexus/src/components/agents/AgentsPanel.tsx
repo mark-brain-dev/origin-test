@@ -239,12 +239,59 @@ export default function AgentsPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentMessages, isLoading]);
 
+  // Synthesize tool result via LLM — called after successful tool execution
+  const synthesizeToolResult = useCallback(async (
+    agentId: string,
+    agent: Agent,
+    action: string,
+    result: unknown,
+    conversationHistory: ChatMessage[],
+    providerId?: string,
+  ) => {
+    setIsLoading(true);
+    try {
+      const resultStr = JSON.stringify(result, null, 2).slice(0, 2000);
+      const synthesisPrompt = `The tool "${action}" was executed successfully. Here is the result:\n\`\`\`json\n${resultStr}\n\`\`\`\n\nPlease provide a clear, concise summary of what was returned. If it's a list, summarize the key items. If it's a single object, explain what it means. Be helpful and specific.`;
+
+      const apiMessages = [
+        { role: "system", content: agent.systemPrompt + (agentContext?.systemContext || "") },
+        ...conversationHistory.map(m => ({ role: m.role === "system" ? "assistant" : m.role, content: m.content })),
+        { role: "user", content: synthesisPrompt },
+      ];
+
+      const response = await fetch(`${BASE}/api/ai/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: apiMessages, providerId }),
+      });
+
+      if (!response.ok) return;
+      const data = await response.json();
+      const content = data.content || data.message || data.choices?.[0]?.message?.content;
+      if (!content) return;
+
+      const synthesisMsg: ChatMessage = {
+        role: "assistant",
+        content,
+        timestamp: new Date().toISOString(),
+      };
+      setConversations(prev => ({
+        ...prev,
+        [agentId]: [...(prev[agentId] || []), synthesisMsg],
+      }));
+    } catch { /* silent — synthesis is best-effort */ }
+    setIsLoading(false);
+  }, [agentContext]);
+
   // Execute a Composio tool action
   const executeToolAction = useCallback(async (
     agentId: string,
     action: string,
     input: Record<string, unknown>,
-    messageIndex: number
+    messageIndex: number,
+    agent?: Agent,
+    conversationSnapshot?: ChatMessage[],
+    providerId?: string,
   ) => {
     setExecutingTool(action);
     try {
@@ -274,13 +321,17 @@ export default function AgentsPanel() {
         if (data.code === "NO_ACTIVE_CONNECTION") {
           toast.error(`No active ${data.appName} connection`, {
             description: "Connect this app in Settings → Integrations first.",
-            action: { label: "Connect", onClick: () => window.history.pushState(null, "", "/settings/integrations") },
+            action: { label: "Connect", onClick: () => { window.history.pushState(null, "", "/settings/integrations"); window.dispatchEvent(new PopStateEvent("popstate")); } },
           });
         } else {
           toast.error("Tool execution failed: " + (data.error || data.message || "Unknown"));
         }
       } else {
-        toast.success(`${action} executed successfully`);
+        toast.success(`${action} completed`);
+        // Synthesize the result for the user if we have agent context
+        if (agent && conversationSnapshot) {
+          await synthesizeToolResult(agentId, agent, action, data, conversationSnapshot, providerId);
+        }
       }
     } catch (err: any) {
       setConversations(prev => {
@@ -296,7 +347,7 @@ export default function AgentsPanel() {
       toast.error("Tool execution error: " + err.message);
     }
     setExecutingTool(null);
-  }, []);
+  }, [synthesizeToolResult]);
 
   const sendMessage = async () => {
     if (!prompt.trim() || !selectedAgent || isLoading) return;
@@ -363,7 +414,15 @@ export default function AgentsPanel() {
         app => toolCall.action.toLowerCase().startsWith(app.toLowerCase())
       )) {
         const msgIdx = newMessages.length - 1;
-        await executeToolAction(selectedAgent.id, toolCall.action, toolCall.input, msgIdx);
+        await executeToolAction(
+          selectedAgent.id,
+          toolCall.action,
+          toolCall.input,
+          msgIdx,
+          selectedAgent,
+          newMessages,
+          defaultProvider?.id,
+        );
       } else if (toolCall) {
         // Tool call detected but app not connected
         const appName = toolCall.action.split("_")[0].toLowerCase();
@@ -879,7 +938,15 @@ export default function AgentsPanel() {
                               <Button size="sm" variant="outline"
                                 className="mt-2 h-6 text-[10px] gap-1 border-violet-500/40 text-violet-400"
                                 disabled={!!executingTool}
-                                onClick={() => executeToolAction(selectedAgent.id, msg.toolCall!.action, msg.toolCall!.input, i)}>
+                                onClick={() => executeToolAction(
+                                  selectedAgent.id,
+                                  msg.toolCall!.action,
+                                  msg.toolCall!.input,
+                                  i,
+                                  selectedAgent,
+                                  currentMessages,
+                                  defaultProvider?.id,
+                                )}>
                                 {executingTool === msg.toolCall.action
                                   ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
                                   : <Play className="h-2.5 w-2.5" />}

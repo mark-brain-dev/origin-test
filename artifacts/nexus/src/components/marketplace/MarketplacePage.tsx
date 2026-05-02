@@ -253,11 +253,20 @@ export default function MarketplacePage() {
     }
   }, []);
 
+  // On mount: clean up stale INITIATED connections first, then fetch
+  const cleanupStale = useCallback(async () => {
+    try {
+      await fetch(`${BASE}/api/composio/connections/stale/cleanup`, { method: "DELETE" });
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
-    fetchApps();
-    fetchConnections();
+    cleanupStale().then(() => {
+      fetchApps();
+      fetchConnections();
+    });
     return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
-  }, [fetchApps, fetchConnections]);
+  }, [fetchApps, fetchConnections, cleanupStale]);
 
   const isConnected = (appKey: string) =>
     connections.some(
