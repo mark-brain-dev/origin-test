@@ -1,10 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Search, ExternalLink, Check, Plug, Globe, Code,
-  Star, Download, Filter, ChevronRight, Sparkles, Zap,
-  Loader2, RefreshCw, AlertCircle, Link2, Unlink,
-  Wrench, Blocks,
+  Search, Check, Plug, RefreshCw, AlertCircle, Link2, Unlink,
+  Loader2, Key, X, Eye, EyeOff, Info, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +33,11 @@ interface ComposioConnection {
   enabled?: boolean;
 }
 
-// Fallback static apps for when the API is unavailable
+interface ApiKeyModalState {
+  app: ComposioApp;
+  hint: string;
+}
+
 const FALLBACK_APPS = [
   { key: "github", displayName: "GitHub", description: "Connect repositories, issues, and pull requests", logo: "🐙", categories: ["Dev"] },
   { key: "slack", displayName: "Slack", description: "Import Slack conversations and create pages from threads", logo: "💬", categories: ["Communication"] },
@@ -59,11 +61,14 @@ const FALLBACK_APPS = [
   { key: "supabase", displayName: "Supabase", description: "Connect your Supabase databases to Nexus", logo: "⚡", categories: ["DB"] },
   { key: "openai", displayName: "OpenAI", description: "Direct OpenAI API integration for agents", logo: "🤖", categories: ["AI"] },
   { key: "serpapi", displayName: "SerpAPI", description: "Web search results for AI agents", logo: "🔍", categories: ["Search"] },
+  { key: "elevenlabs", displayName: "ElevenLabs", description: "AI voice synthesis for Nexus agents", logo: "🎙️", categories: ["AI"] },
+  { key: "one_drive", displayName: "OneDrive", description: "Microsoft OneDrive file storage integration", logo: "☁️", categories: ["Storage"] },
 ];
 
 const APP_CATEGORIES = ["All", "Dev", "Communication", "Productivity", "PM", "CRM", "Finance", "Social", "Storage", "Design", "Data", "DB", "AI", "Search"];
 
 function getAppLogo(app: ComposioApp): string {
+  if (app.logo && app.logo.startsWith("http")) return app.logo;
   if (app.logo && !app.logo.startsWith("http")) return app.logo;
   const logoMap: Record<string, string> = {
     github: "🐙", slack: "💬", gmail: "📧", googlecalendar: "📅",
@@ -74,6 +79,10 @@ function getAppLogo(app: ComposioApp): string {
     serpapi: "🔍", clickup: "🟣", monday: "🔴", todoist: "✅",
     zendesk: "🎫", intercom: "💬", sendgrid: "📨", twilio: "📱",
     shopify: "🛍️", webflow: "🌊", wordpress: "📝", medium: "📰",
+    elevenlabs: "🎙️", one_drive: "☁️", microsoftteams: "💼", outlook: "📬",
+    perplexityai: "🔮", firecrawl: "🕷️", tavily: "🧭", exa: "🔎",
+    apollo: "🚀", hubspot_crm: "🟠", calendly: "📆", googlesheets: "📊",
+    googledocs: "📄", googletasks: "✅", youtube: "▶️",
   };
   return logoMap[app.key] || "🔗";
 }
@@ -98,6 +107,101 @@ function getAppCategory(app: ComposioApp): string {
   return "Tools";
 }
 
+function ApiKeyModal({
+  state,
+  onClose,
+  onSubmit,
+}: {
+  state: ApiKeyModalState;
+  onClose: () => void;
+  onSubmit: (app: ComposioApp, apiKey: string) => void;
+}) {
+  const [apiKey, setApiKey] = useState("");
+  const [show, setShow] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!apiKey.trim()) return;
+    setSubmitting(true);
+    await onSubmit(state.app, apiKey.trim());
+    setSubmitting(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="w-full max-w-md mx-4 bg-card border border-border rounded-2xl shadow-2xl p-6"
+      >
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center">
+              <Key className="h-5 w-5 text-amber-400" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-foreground">
+                {state.app.displayName || state.app.key} API Key
+              </h3>
+              <p className="text-xs text-muted-foreground">Custom credentials required</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-4">
+          <Info className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-300/90 leading-relaxed">
+            {state.hint || `${state.app.displayName || state.app.key} requires your own API key. Composio does not manage credentials for this service.`}
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            API Key
+          </label>
+          <div className="relative">
+            <input
+              type={show ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+              placeholder={`Paste your ${state.app.displayName || state.app.key} API key…`}
+              className="w-full bg-muted/60 border border-border/60 rounded-xl px-4 py-2.5 text-sm pr-10 font-mono focus:border-primary/50 outline-none transition-colors"
+            />
+            <button
+              onClick={() => setShow(!show)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 mt-5">
+          <Button variant="outline" className="flex-1" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            className="flex-1 bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0"
+            onClick={handleSubmit}
+            disabled={!apiKey.trim() || submitting}
+          >
+            {submitting ? (
+              <><Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />Connecting…</>
+            ) : (
+              <><Zap className="h-3.5 w-3.5 mr-2" />Connect</>
+            )}
+          </Button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 export default function MarketplacePage() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
@@ -109,6 +213,8 @@ export default function MarketplacePage() {
   const [connectingApp, setConnectingApp] = useState<string | null>(null);
   const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
   const [composioStatus, setComposioStatus] = useState<"loading" | "ok" | "error">("loading");
+  const [apiKeyModal, setApiKeyModal] = useState<ApiKeyModalState | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchApps = useCallback(async () => {
     setAppsLoading(true);
@@ -143,13 +249,14 @@ export default function MarketplacePage() {
         setConnections(data.items || data || []);
       }
     } catch {
-      // silently fail — connections remain empty
+      // silently fail
     }
   }, []);
 
   useEffect(() => {
     fetchApps();
     fetchConnections();
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
   }, [fetchApps, fetchConnections]);
 
   const isConnected = (appKey: string) =>
@@ -157,60 +264,120 @@ export default function MarketplacePage() {
       (c) => c.appName?.toLowerCase() === appKey.toLowerCase() && c.status === "ACTIVE"
     );
 
+  const isPending = (appKey: string) =>
+    connections.some(
+      (c) => c.appName?.toLowerCase() === appKey.toLowerCase() && c.status === "INITIATED"
+    );
+
   const getConnectionId = (appKey: string) =>
     connections.find(
       (c) => c.appName?.toLowerCase() === appKey.toLowerCase() && c.status === "ACTIVE"
     )?.id;
 
-  const handleConnect = async (app: ComposioApp) => {
+  // Poll connections until the given appKey becomes ACTIVE (up to 60s)
+  const pollUntilActive = useCallback((appKey: string, displayName: string) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    let elapsed = 0;
+    pollingRef.current = setInterval(async () => {
+      elapsed += 2000;
+      await fetchConnections();
+      // Check directly from API to avoid stale closure
+      try {
+        const r = await fetch(`${BASE}/api/composio/connections?entityId=default`);
+        if (r.ok) {
+          const data = await r.json();
+          const found = (data.items || []).find(
+            (c: ComposioConnection) =>
+              c.appName?.toLowerCase() === appKey.toLowerCase() && c.status === "ACTIVE"
+          );
+          if (found) {
+            clearInterval(pollingRef.current!);
+            setConnections(data.items || []);
+            toast.success(`${displayName} connected successfully!`, {
+              description: "You can now use it in your AI agents.",
+            });
+            return;
+          }
+        }
+      } catch { /* ignore */ }
+      if (elapsed >= 60000) {
+        clearInterval(pollingRef.current!);
+        toast.info(`Still connecting ${displayName}…`, {
+          description: "Check back in a moment — authorization may still be in progress.",
+        });
+      }
+    }, 2000);
+  }, [fetchConnections]);
+
+  const doInitiate = async (app: ComposioApp, apiKey?: string) => {
     setConnectingApp(app.key);
     try {
-      // Backend handles multi-step: find app → create integration → initiate OAuth
+      const body: Record<string, string> = { appName: app.key, entityId: "default" };
+      if (apiKey) body.apiKey = apiKey;
+
       const r = await fetch(`${BASE}/api/composio/connections/initiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ appName: app.key, entityId: "default" }),
+        body: JSON.stringify(body),
       });
-
       const data = await r.json();
 
       if (!r.ok) {
+        // API key required — show modal
+        if (data.code === "REQUIRES_API_KEY" || data.requiresApiKey) {
+          setApiKeyModal({ app, hint: data.hint || `${app.displayName || app.key} requires your own API key.` });
+          return;
+        }
+        // No auth needed — treat as "already available"
+        if (data.code === "NO_AUTH_REQUIRED" || data.noAuth) {
+          toast.info(`${app.displayName || app.key} doesn't need authorization`, {
+            description: "This toolkit is available without a connection.",
+          });
+          return;
+        }
         throw new Error(data.error || "Failed to connect");
       }
 
+      setApiKeyModal(null);
+
       if (data.redirectUrl) {
-        // Open OAuth in a popup window
         const popup = window.open(
           data.redirectUrl,
           `composio_oauth_${app.key}`,
           "width=600,height=700,scrollbars=yes,resizable=yes"
         );
-        toast.info(`Connecting ${app.displayName || app.key}…`, {
-          description: "Complete the authorization in the popup window",
-          duration: 8000,
+        toast.info(`Authorizing ${app.displayName || app.key}…`, {
+          description: "Complete the sign-in in the popup window.",
+          duration: 10000,
         });
-        // Poll for popup close
-        const poll = setInterval(async () => {
-          if (!popup || popup.closed) {
-            clearInterval(poll);
-            await fetchConnections();
-            if (isConnected(app.key)) {
-              toast.success(`${app.displayName || app.key} connected!`);
-            }
-          }
+        // Poll connections every 2s for up to 60s after popup opens
+        pollUntilActive(app.key, app.displayName || app.key);
+        // Also watch for popup close
+        const popupCheck = setInterval(() => {
+          if (!popup || popup.closed) clearInterval(popupCheck);
         }, 1000);
-      } else if (data.connectionStatus === "ACTIVE" || data.connectionStatus === "INITIATED") {
-        toast.success(`${app.displayName || app.key} connection initiated`);
+      } else if (data.connectionStatus === "ACTIVE") {
+        toast.success(`${app.displayName || app.key} connected!`);
         await fetchConnections();
       } else {
-        toast.success(`${app.displayName || app.key} connected`);
-        await fetchConnections();
+        toast.success(`${app.displayName || app.key} connection initiated`, {
+          description: "Polling for active status…",
+        });
+        pollUntilActive(app.key, app.displayName || app.key);
       }
     } catch (err: any) {
-      toast.error(`Failed to connect ${app.displayName || app.key}: ${err.message}`);
+      toast.error(`Failed to connect ${app.displayName || app.key}`, {
+        description: err.message,
+      });
     } finally {
       setConnectingApp(null);
     }
+  };
+
+  const handleConnect = async (app: ComposioApp) => doInitiate(app);
+
+  const handleApiKeySubmit = async (app: ComposioApp, apiKey: string) => {
+    await doInitiate(app, apiKey);
   };
 
   const handleDisconnect = async (app: ComposioApp) => {
@@ -247,6 +414,16 @@ export default function MarketplacePage() {
 
   return (
     <div className="h-full flex flex-col">
+      <AnimatePresence>
+        {apiKeyModal && (
+          <ApiKeyModal
+            state={apiKeyModal}
+            onClose={() => setApiKeyModal(null)}
+            onSubmit={handleApiKeySubmit}
+          />
+        )}
+      </AnimatePresence>
+
       <div className="px-8 py-6 border-b border-border/40">
         <div className="max-w-4xl mx-auto">
           <div className="flex items-center gap-3 mb-1">
@@ -346,6 +523,7 @@ export default function MarketplacePage() {
                 <div className="grid grid-cols-3 gap-4">
                   {filtered.map((app, i) => {
                     const connected = isConnected(app.key);
+                    const pending = isPending(app.key);
                     const isConnecting = connectingApp === app.key;
                     const logo = getAppLogo(app);
                     const catLabel = getAppCategory(app);
@@ -354,10 +532,12 @@ export default function MarketplacePage() {
                         key={app.key}
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.02 }}
+                        transition={{ delay: i * 0.01 }}
                         className={cn(
                           "group flex flex-col gap-3 p-4 rounded-xl border bg-card hover:border-border transition-all",
-                          connected ? "border-green-500/30 bg-green-500/5" : "border-border/60"
+                          connected ? "border-green-500/30 bg-green-500/5"
+                          : pending ? "border-amber-500/30 bg-amber-500/5"
+                          : "border-border/60"
                         )}
                       >
                         <div className="flex items-start justify-between">
@@ -367,7 +547,9 @@ export default function MarketplacePage() {
                                 src={logo}
                                 alt={app.displayName || app.key}
                                 className="w-10 h-10 rounded-xl object-contain bg-muted p-1"
-                                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                                onError={(e) => {
+                                  (e.target as HTMLImageElement).style.display = "none";
+                                }}
                               />
                             ) : (
                               <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center text-xl">
@@ -381,6 +563,9 @@ export default function MarketplacePage() {
                                 </span>
                                 {connected && (
                                   <div className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" />
+                                )}
+                                {pending && !connected && (
+                                  <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
                                 )}
                               </div>
                               <div className="text-[11px] text-muted-foreground/60">{catLabel}</div>
@@ -401,15 +586,18 @@ export default function MarketplacePage() {
                             variant={connected ? "outline" : "default"}
                             className={cn(
                               "h-7 text-xs gap-1.5",
-                              !connected && "bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0"
+                              !connected && !pending && "bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white border-0",
+                              pending && !connected && "bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30"
                             )}
-                            disabled={isConnecting}
+                            disabled={isConnecting || pending}
                             onClick={() => connected ? handleDisconnect(app) : handleConnect(app)}
                           >
                             {isConnecting ? (
                               <><Loader2 className="h-3 w-3 animate-spin" />Connecting…</>
                             ) : connected ? (
                               <><Check className="h-3 w-3" />Connected</>
+                            ) : pending ? (
+                              <><Loader2 className="h-3 w-3 animate-spin" />Pending…</>
                             ) : (
                               <><Link2 className="h-3 w-3" />Connect</>
                             )}

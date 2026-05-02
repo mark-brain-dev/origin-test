@@ -277,48 +277,144 @@ router.get("/connections/:id/status", async (req: Request, res: Response) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
+// Normalize toolkit slugs (Composio uses non-obvious slug names for some apps)
+const SLUG_MAP: Record<string, string> = {
+  onedrive: "one_drive",
+  "microsoft-onedrive": "one_drive",
+  googledocs: "googledocs",
+  "google-docs": "googledocs",
+  "google-drive": "googledrive",
+  "google-calendar": "googlecalendar",
+  "google-sheets": "googlesheets",
+  "google-tasks": "googletasks",
+  "google-meet": "google_meet",
+  googlemeet: "google_meet",
+  twitterv2: "twitter",
+  "twitter-v2": "twitter",
+  whatsapp: "whatsapp_cloud",
+  "discord-bot": "discordbot",
+};
+
+// Apps that don't support Composio-managed OAuth (need user API key)
+const NO_MANAGED_CREDS_APPS = new Set([
+  "elevenlabs", "perplexityai", "perplexity", "openai", "anthropic",
+  "firecrawl", "exa", "tavily", "serpapi", "sentry", "snowflake",
+  "apollo", "klaviyo", "attio", "semrush", "cal", "posthog",
+  "mem0", "wrike", "composio_search",
+]);
+
+// Apps that don't need any authentication
+const NO_AUTH_APPS = new Set(["composio"]);
+
+function normalizeSlug(appName: string): string {
+  const lower = appName.toLowerCase();
+  return SLUG_MAP[lower] || lower;
+}
+
 // POST initiate OAuth connection (v3 flow)
 router.post("/connections/initiate", async (req: Request, res: Response) => {
-  const { appName, entityId = "default" } = req.body;
+  const { appName, entityId = "default", apiKey: userApiKey } = req.body;
   if (!appName) { res.status(400).json({ error: "appName is required" }); return; }
 
+  const slug = normalizeSlug(appName);
+
+  // Handle no-auth apps (Composio itself, etc.)
+  if (NO_AUTH_APPS.has(slug)) {
+    res.status(400).json({
+      error: `${appName} doesn't require authentication`,
+      code: "NO_AUTH_REQUIRED",
+      noAuth: true,
+    });
+    return;
+  }
+
+  // Handle apps known to have no managed credentials
+  if (NO_MANAGED_CREDS_APPS.has(slug) && !userApiKey) {
+    res.status(400).json({
+      error: `${appName} requires your own API key`,
+      code: "REQUIRES_API_KEY",
+      requiresApiKey: true,
+      appName: slug,
+      hint: `Provide your ${appName} API key to connect`,
+    });
+    return;
+  }
+
   try {
-    // Step 1: find existing auth_config with ac_ prefixed ID
+    // Step 1: find existing ENABLED auth_config for this toolkit
+    // NOTE: GET /auth_configs returns ALL configs — must filter by toolkit.slug
     let authConfigId: string | null = null;
-    const acRes = await v3(`/auth_configs?app_name=${encodeURIComponent(appName)}&limit=20`);
+    const acRes = await v3(`/auth_configs?limit=50`);
     if (acRes.ok) {
       const acData = await safeJson(acRes);
       const found = (acData.items || []).find(
         (ac: any) =>
-          (ac.toolkit?.slug?.toLowerCase() === appName.toLowerCase() ||
-           ac.app_name?.toLowerCase() === appName.toLowerCase()) &&
-          ac.status !== "DISABLED" && !ac.deleted
+          ac.toolkit?.slug?.toLowerCase() === slug &&
+          ac.status === "ENABLED" &&
+          !ac.deleted
       );
       if (found) authConfigId = found.id;
     }
 
     // Step 2: create auth_config if none found
     if (!authConfigId) {
+      let createBody: Record<string, unknown>;
+
+      if (userApiKey) {
+        // User provided their own API key — use custom auth
+        createBody = {
+          toolkit: { slug },
+          type: "use_custom_auth",
+          authScheme: "API_KEY",
+          credentials: { api_key: userApiKey },
+        };
+      } else {
+        // Use Composio's managed OAuth
+        createBody = { toolkit: { slug }, type: "use_composio_auth" };
+      }
+
       const createRes = await v3("/auth_configs", {
         method: "POST",
-        body: JSON.stringify({ toolkit: { slug: appName }, type: "use_composio_auth" }),
+        body: JSON.stringify(createBody),
       });
-      if (createRes.ok) {
-        const created = await safeJson(createRes);
-        authConfigId = created.id || null;
-      } else {
-        const e = await safeJson(createRes);
-        res.status(createRes.status).json({ error: e?.error?.message || "Failed to create auth config" });
+      const created = await safeJson(createRes);
+
+      if (!createRes.ok) {
+        const errCode = created?.error?.code;
+        const errSlug = created?.error?.slug;
+        const errMsg = created?.error?.message || "Failed to create auth config";
+
+        // Code 303 = app doesn't need auth
+        if (errCode === 303 || errSlug === "Auth_Config_NoAuthApp") {
+          res.status(400).json({ error: `${appName} doesn't require authentication`, code: "NO_AUTH_REQUIRED", noAuth: true });
+          return;
+        }
+        // Code 306 = no managed credentials for this toolkit
+        if (errCode === 306 || errSlug === "Auth_Config_DefaultAuthConfigNotFound") {
+          res.status(400).json({
+            error: `${appName} requires your own API key`,
+            code: "REQUIRES_API_KEY",
+            requiresApiKey: true,
+            appName: slug,
+            hint: `Composio doesn't manage credentials for ${appName}. Provide your own API key.`,
+          });
+          return;
+        }
+
+        res.status(createRes.status).json({ error: errMsg });
         return;
       }
+
+      // IMPORTANT: ID is at created.auth_config.id, NOT created.id
+      authConfigId = created.auth_config?.id || created.id || null;
     }
 
     if (!authConfigId) {
-      res.status(500).json({ error: `No auth config available for '${appName}'` });
+      res.status(500).json({ error: `Could not find or create auth config for '${slug}'` });
       return;
     }
 
-    // Step 3: create connected_account → initiates OAuth
+    // Step 3: create connected_account → initiates OAuth popup
     const connRes = await v3("/connected_accounts", {
       method: "POST",
       body: JSON.stringify({
@@ -327,8 +423,10 @@ router.post("/connections/initiate", async (req: Request, res: Response) => {
       }),
     });
     const connData = await safeJson(connRes);
+
     if (!connRes.ok) {
-      res.status(connRes.status).json({ error: connData?.error?.message || "Failed to initiate connection" });
+      const errMsg = connData?.error?.message || "Failed to initiate connection";
+      res.status(connRes.status).json({ error: errMsg });
       return;
     }
 
