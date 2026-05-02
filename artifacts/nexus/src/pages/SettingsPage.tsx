@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings, Brain, Zap, Key, Plus, Trash2, Check, X, ExternalLink,
   RefreshCw, Shield, User, Palette, Database, Globe, Star, ChevronRight,
   Eye, EyeOff, TestTube2, CheckCircle, XCircle, Loader2, Hash,
   Bell, Mail, Plug, Users, Download, Upload, Cpu, Lock, ChevronDown,
-  Sparkles, BookOpen, LayoutGrid, Code, Bot, Search,
+  Sparkles, BookOpen, LayoutGrid, Code, Bot, Search, Activity,
+  Copy, Radio, ChevronUp, AlertCircle, Wifi,
 } from "lucide-react";
 import {
   useListAiProviders, useGetAiProviderCatalog, useCreateAiProvider,
@@ -1386,6 +1387,22 @@ function SecuritySection() {
 }
 
 /* ─────────────────────────── TRIGGERS ─────────────────────────── */
+interface WebhookEvent {
+  id: string;
+  triggerName: string;
+  appName: string;
+  entityId: string;
+  payload: Record<string, unknown>;
+  receivedAt: string;
+}
+
+const APP_EMOJI: Record<string, string> = {
+  github: "🐙", slack: "💬", gmail: "📧", googlecalendar: "📅",
+  notion: "📋", linear: "🔷", jira: "🟦", discord: "🎮",
+  zoom: "📹", asana: "✅", trello: "🗂️", hubspot: "🟠",
+  stripe: "💳", outlook: "🟦", twitter: "𝕏", shopify: "🛍️",
+};
+
 function TriggersSection() {
   const [triggers, setTriggers] = useState<any[]>([]);
   const [instances, setInstances] = useState<any[]>([]);
@@ -1395,6 +1412,46 @@ function TriggersSection() {
   const [appFilter, setAppFilter] = useState("all");
   const [subscribing, setSubscribing] = useState<string | null>(null);
   const [unsubscribing, setUnsubscribing] = useState<string | null>(null);
+
+  // Webhook event log state
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
+  const [webhookUrl, setWebhookUrl] = useState<string>("");
+  const [webhookExpanded, setWebhookExpanded] = useState(true);
+  const [expandedEvent, setExpandedEvent] = useState<string | null>(null);
+  const [livePolling, setLivePolling] = useState(true);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchWebhookData = useCallback(async () => {
+    try {
+      const [evtRes, cfgRes] = await Promise.all([
+        fetch(`${BASE_URL}/api/composio/webhook/events`),
+        fetch(`${BASE_URL}/api/composio/webhook/config`),
+      ]);
+      if (evtRes.ok) {
+        const d = await evtRes.json();
+        setWebhookEvents(d.events || []);
+      }
+      if (cfgRes.ok) {
+        const d = await cfgRes.json();
+        setWebhookUrl(d.webhookUrl || "");
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  // Live poll webhook events every 4s
+  useEffect(() => {
+    if (livePolling) {
+      fetchWebhookData();
+      pollRef.current = setInterval(fetchWebhookData, 4000);
+    } else {
+      if (pollRef.current) clearInterval(pollRef.current);
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [livePolling, fetchWebhookData]);
+
+  const copyWebhookUrl = () => {
+    navigator.clipboard.writeText(webhookUrl).then(() => toast.success("Webhook URL copied!"));
+  };
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -1506,15 +1563,185 @@ function TriggersSection() {
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-xl font-bold">Triggers</h2>
+            <h2 className="text-xl font-bold">Triggers & Webhooks</h2>
             <p className="text-sm text-muted-foreground mt-1">
               Subscribe to real-time events from your connected apps. {triggers.length} triggers available.
             </p>
           </div>
-          <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={fetchAll}>
+          <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={() => { fetchAll(); fetchWebhookData(); }}>
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
           </Button>
+        </div>
+
+        {/* ── Webhook Event Log ───────────────────────────────────────────────── */}
+        <div className="rounded-xl border border-border/60 overflow-hidden">
+          {/* Collapsible header */}
+          <button
+            onClick={() => setWebhookExpanded(v => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-card hover:bg-accent/30 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
+                <Radio className="h-3.5 w-3.5 text-violet-400" />
+              </div>
+              <div className="text-left">
+                <div className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  Webhook Event Log
+                  {webhookEvents.length > 0 && (
+                    <span className="text-[10px] bg-violet-500/20 text-violet-400 px-1.5 py-0.5 rounded-full font-medium">
+                      {webhookEvents.length} events
+                    </span>
+                  )}
+                  {livePolling && (
+                    <span className="flex items-center gap-1 text-[10px] text-green-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                      live
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-muted-foreground">Real-time trigger events received by this app</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={(e) => { e.stopPropagation(); setLivePolling(v => !v); }}
+                className={cn(
+                  "text-[10px] px-2 py-0.5 rounded-full border transition-colors",
+                  livePolling
+                    ? "border-green-500/30 text-green-400 bg-green-500/10"
+                    : "border-border/60 text-muted-foreground"
+                )}
+              >
+                {livePolling ? "● Live" : "○ Paused"}
+              </button>
+              {webhookExpanded
+                ? <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+            </div>
+          </button>
+
+          <AnimatePresence>
+            {webhookExpanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="overflow-hidden"
+              >
+                {/* Webhook URL */}
+                <div className="px-4 py-3 border-t border-border/40 bg-muted/20">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Wifi className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Your Webhook URL</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-[11px] font-mono bg-black/20 rounded-lg px-3 py-2 text-muted-foreground truncate border border-border/30">
+                      {webhookUrl || "Loading…"}
+                    </code>
+                    <Button size="icon" variant="outline" className="h-8 w-8 flex-shrink-0" onClick={copyWebhookUrl}>
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/60 mt-1.5">
+                    Add this URL in{" "}
+                    <a href="https://app.composio.dev/settings" target="_blank" rel="noopener noreferrer"
+                      className="text-primary underline">app.composio.dev → Webhooks</a>
+                    {" "}to receive real-time trigger events.
+                  </p>
+                </div>
+
+                {/* Events */}
+                <div className="border-t border-border/40 divide-y divide-border/20">
+                  {webhookEvents.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-10 text-center px-4">
+                      <div className="w-10 h-10 rounded-xl bg-muted/40 flex items-center justify-center mb-3">
+                        <Activity className="h-5 w-5 text-muted-foreground/30" />
+                      </div>
+                      <p className="text-sm font-medium text-muted-foreground">No events received yet</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1 max-w-xs leading-relaxed">
+                        Once you add the webhook URL to Composio and subscribe to triggers,
+                        events will appear here in real-time.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="max-h-80 overflow-y-auto">
+                      {webhookEvents.map((evt) => {
+                        const isExpanded = expandedEvent === evt.id;
+                        const emoji = APP_EMOJI[evt.appName?.toLowerCase()] || "⚡";
+                        const relTime = (() => {
+                          const diff = Date.now() - new Date(evt.receivedAt).getTime();
+                          if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
+                          if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+                          return new Date(evt.receivedAt).toLocaleTimeString();
+                        })();
+
+                        return (
+                          <motion.div
+                            key={evt.id}
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="px-4 py-3 hover:bg-accent/20 transition-colors cursor-pointer"
+                            onClick={() => setExpandedEvent(isExpanded ? null : evt.id)}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="text-base flex-shrink-0">{emoji}</div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-semibold text-foreground font-mono truncate">
+                                    {evt.triggerName}
+                                  </span>
+                                  <Badge variant="outline" className="text-[9px] px-1 h-3.5 border-border/40 text-muted-foreground capitalize flex-shrink-0">
+                                    {evt.appName}
+                                  </Badge>
+                                </div>
+                                {!isExpanded && (
+                                  <div className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                    {JSON.stringify(evt.payload).slice(0, 80)}…
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <span className="text-[10px] text-muted-foreground/50">{relTime}</span>
+                                <div className="w-5 h-5 rounded-full bg-green-500/10 flex items-center justify-center">
+                                  <CheckCircle className="h-3 w-3 text-green-400" />
+                                </div>
+                                {isExpanded
+                                  ? <ChevronUp className="h-3 w-3 text-muted-foreground" />
+                                  : <ChevronDown className="h-3 w-3 text-muted-foreground" />}
+                              </div>
+                            </div>
+                            <AnimatePresence>
+                              {isExpanded && (
+                                <motion.div
+                                  initial={{ height: 0, opacity: 0 }}
+                                  animate={{ height: "auto", opacity: 1 }}
+                                  exit={{ height: 0, opacity: 0 }}
+                                  className="mt-3 overflow-hidden"
+                                >
+                                  <pre className="text-[10px] font-mono bg-black/20 rounded-lg p-3 overflow-x-auto text-muted-foreground border border-border/30 max-h-40">
+                                    {JSON.stringify(evt.payload, null, 2)}
+                                  </pre>
+                                  <div className="flex items-center gap-3 mt-2 text-[10px] text-muted-foreground/50">
+                                    <span>entity: {evt.entityId}</span>
+                                    <span>·</span>
+                                    <span>{new Date(evt.receivedAt).toLocaleString()}</span>
+                                    <span>·</span>
+                                    <span className="font-mono text-muted-foreground/30">{evt.id}</span>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </motion.div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Active subscriptions */}

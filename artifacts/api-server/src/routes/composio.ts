@@ -1,24 +1,54 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 
 const router = Router();
 
-const COMPOSIO_BASE = "https://backend.composio.dev/api/v1";
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-async function composioFetch(path: string, init?: RequestInit): Promise<Response> {
-  const apiKey = process.env.COMPOSIO_API_KEY;
-  if (!apiKey) throw new Error("COMPOSIO_API_KEY not set");
-  return fetch(`${COMPOSIO_BASE}${path}`, {
-    ...init,
-    headers: {
-      "x-api-key": apiKey,
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+const V1 = "https://backend.composio.dev/api/v1";
+const V2 = "https://backend.composio.dev/api/v2";
+const V3 = "https://backend.composio.dev/api/v3";
+
+// In-memory webhook event ring buffer (last 100 events)
+const WEBHOOK_EVENTS: Array<{
+  id: string;
+  triggerName: string;
+  appName: string;
+  entityId: string;
+  payload: Record<string, unknown>;
+  receivedAt: string;
+}> = [];
+const MAX_WEBHOOK_EVENTS = 100;
+
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
+
+function getKey(): string {
+  const key = process.env.COMPOSIO_API_KEY;
+  if (!key) throw new Error("COMPOSIO_API_KEY not set");
+  return key;
 }
 
-// Curated action catalog (since v1 /actions is deprecated)
-const CURATED_ACTIONS: Record<string, Array<{ name: string; displayName: string; description: string; parameters: string[] }>> = {
+function hdrs(extra: Record<string, string> = {}) {
+  return { "x-api-key": getKey(), "Content-Type": "application/json", ...extra };
+}
+
+async function cFetch(base: string, path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${base}${path}`, { ...init, headers: { ...hdrs(), ...(init?.headers as Record<string,string> ?? {}) } });
+}
+
+const v1 = (path: string, init?: RequestInit) => cFetch(V1, path, init);
+const v2 = (path: string, init?: RequestInit) => cFetch(V2, path, init);
+const v3 = (path: string, init?: RequestInit) => cFetch(V3, path, init);
+
+async function safeJson(r: Response): Promise<any> {
+  const text = await r.text().catch(() => "{}");
+  try { return JSON.parse(text); } catch { return { _raw: text }; }
+}
+
+// ─── Curated action catalog ───────────────────────────────────────────────────
+
+const CURATED_ACTIONS: Record<string, Array<{
+  name: string; displayName: string; description: string; parameters: string[];
+}>> = {
   github: [
     { name: "GITHUB_CREATE_ISSUE", displayName: "Create Issue", description: "Create a new issue in a repository", parameters: ["owner", "repo", "title", "body"] },
     { name: "GITHUB_LIST_ISSUES", displayName: "List Issues", description: "List open issues in a repository", parameters: ["owner", "repo", "state"] },
@@ -26,58 +56,65 @@ const CURATED_ACTIONS: Record<string, Array<{ name: string; displayName: string;
     { name: "GITHUB_LIST_REPOS", displayName: "List Repositories", description: "List repositories for a user or org", parameters: ["username"] },
     { name: "GITHUB_CREATE_COMMENT", displayName: "Add Comment", description: "Comment on an issue or PR", parameters: ["owner", "repo", "issue_number", "body"] },
     { name: "GITHUB_STAR_REPO", displayName: "Star Repository", description: "Star a GitHub repository", parameters: ["owner", "repo"] },
+    { name: "GITHUB_GET_USER", displayName: "Get User", description: "Get info about a GitHub user", parameters: ["username"] },
+    { name: "GITHUB_LIST_COMMITS", displayName: "List Commits", description: "List commits in a repository", parameters: ["owner", "repo", "per_page"] },
   ],
   slack: [
-    { name: "SLACK_SEND_MESSAGE", displayName: "Send Message", description: "Post a message to a Slack channel", parameters: ["channel", "text"] },
-    { name: "SLACK_LIST_CHANNELS", displayName: "List Channels", description: "Get a list of public channels", parameters: [] },
-    { name: "SLACK_GET_MESSAGES", displayName: "Get Messages", description: "Retrieve messages from a channel", parameters: ["channel", "limit"] },
-    { name: "SLACK_CREATE_CHANNEL", displayName: "Create Channel", description: "Create a new Slack channel", parameters: ["name", "is_private"] },
-    { name: "SLACK_SEND_DM", displayName: "Send Direct Message", description: "Send a direct message to a user", parameters: ["user", "text"] },
+    { name: "SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL", displayName: "Send Message", description: "Post a message to a Slack channel", parameters: ["channel", "text"] },
+    { name: "SLACK_LIST_ALL_SLACK_TEAM_CHANNEL", displayName: "List Channels", description: "Get a list of public channels", parameters: [] },
+    { name: "SLACK_FETCH_MESSAGE_HISTORY_OF_A_SLACK_CHANNEL", displayName: "Get Messages", description: "Retrieve messages from a channel", parameters: ["channel", "limit"] },
+    { name: "SLACK_CREATE_A_NEW_SLACK_CHANNEL", displayName: "Create Channel", description: "Create a new Slack channel", parameters: ["name", "is_private"] },
+    { name: "SLACK_SCHEDULE_A_MESSAGE_TO_SLACK_CHANNEL", displayName: "Schedule Message", description: "Schedule a message to be sent at a specific time", parameters: ["channel", "text", "post_at"] },
   ],
   gmail: [
     { name: "GMAIL_SEND_EMAIL", displayName: "Send Email", description: "Compose and send an email", parameters: ["to", "subject", "body"] },
-    { name: "GMAIL_LIST_EMAILS", displayName: "List Emails", description: "Fetch recent emails from inbox", parameters: ["maxResults", "q"] },
-    { name: "GMAIL_READ_EMAIL", displayName: "Read Email", description: "Read a specific email by ID", parameters: ["messageId"] },
-    { name: "GMAIL_REPLY_TO_THREAD", displayName: "Reply to Thread", description: "Reply to an existing email thread", parameters: ["threadId", "body"] },
-    { name: "GMAIL_SEARCH_EMAILS", displayName: "Search Emails", description: "Search emails with Gmail query syntax", parameters: ["query", "maxResults"] },
-    { name: "GMAIL_CREATE_DRAFT", displayName: "Create Draft", description: "Save an email as a draft", parameters: ["to", "subject", "body"] },
+    { name: "GMAIL_FETCH_EMAILS", displayName: "List Emails", description: "Fetch recent emails from inbox", parameters: ["max_results", "query"] },
+    { name: "GMAIL_GET_MAIL", displayName: "Read Email", description: "Read a specific email by ID", parameters: ["message_id"] },
+    { name: "GMAIL_REPLY_TO_EMAIL_THREAD", displayName: "Reply to Thread", description: "Reply to an existing email thread", parameters: ["thread_id", "body"] },
+    { name: "GMAIL_SEARCH_PEOPLE", displayName: "Search Contacts", description: "Search Gmail contacts", parameters: ["query"] },
+    { name: "GMAIL_CREATE_EMAIL_DRAFT", displayName: "Create Draft", description: "Save an email as a draft", parameters: ["to", "subject", "body"] },
   ],
   googlecalendar: [
-    { name: "GOOGLECALENDAR_CREATE_EVENT", displayName: "Create Event", description: "Create a calendar event", parameters: ["summary", "start", "end", "description"] },
-    { name: "GOOGLECALENDAR_LIST_EVENTS", displayName: "List Events", description: "List upcoming calendar events", parameters: ["timeMin", "timeMax", "maxResults"] },
-    { name: "GOOGLECALENDAR_DELETE_EVENT", displayName: "Delete Event", description: "Remove an event from calendar", parameters: ["eventId"] },
-    { name: "GOOGLECALENDAR_UPDATE_EVENT", displayName: "Update Event", description: "Modify an existing calendar event", parameters: ["eventId", "summary", "start", "end"] },
+    { name: "GOOGLECALENDAR_CREATE_EVENT", displayName: "Create Event", description: "Create a calendar event", parameters: ["summary", "start_datetime", "end_datetime", "description", "attendees"] },
+    { name: "GOOGLECALENDAR_FIND_FREE_SLOTS", displayName: "Find Free Slots", description: "Find available time slots", parameters: ["time_min", "time_max", "calendars"] },
+    { name: "GOOGLECALENDAR_DELETE_EVENT", displayName: "Delete Event", description: "Remove an event from calendar", parameters: ["event_id", "calendar_id"] },
+    { name: "GOOGLECALENDAR_UPDATE_EVENT", displayName: "Update Event", description: "Modify an existing calendar event", parameters: ["event_id", "summary", "start_datetime", "end_datetime"] },
+    { name: "GOOGLECALENDAR_GET_CURRENT_DATE_TIME", displayName: "Get Current DateTime", description: "Get the current date and time", parameters: [] },
+    { name: "GOOGLECALENDAR_QUICK_ADD", displayName: "Quick Add Event", description: "Create an event from a text string", parameters: ["text", "calendar_id"] },
   ],
   notion: [
     { name: "NOTION_CREATE_PAGE", displayName: "Create Page", description: "Create a new Notion page", parameters: ["parent_id", "title", "content"] },
     { name: "NOTION_LIST_DATABASES", displayName: "List Databases", description: "Get all databases in the workspace", parameters: [] },
     { name: "NOTION_QUERY_DATABASE", displayName: "Query Database", description: "Query items from a Notion database", parameters: ["database_id", "filter"] },
-    { name: "NOTION_ADD_DATABASE_ROW", displayName: "Add Row", description: "Add a new row to a database", parameters: ["database_id", "properties"] },
+    { name: "NOTION_ADD_ITEM_TO_DATABASE", displayName: "Add Row", description: "Add a new row to a database", parameters: ["database_id", "properties"] },
     { name: "NOTION_UPDATE_PAGE", displayName: "Update Page", description: "Update properties of a Notion page", parameters: ["page_id", "properties"] },
+    { name: "NOTION_SEARCH_NOTION_PAGE", displayName: "Search Pages", description: "Search across Notion workspace", parameters: ["query"] },
   ],
   linear: [
-    { name: "LINEAR_CREATE_ISSUE", displayName: "Create Issue", description: "Create a new Linear issue", parameters: ["title", "description", "teamId", "priority"] },
-    { name: "LINEAR_LIST_ISSUES", displayName: "List Issues", description: "Get issues assigned to you", parameters: ["teamId", "state"] },
-    { name: "LINEAR_UPDATE_ISSUE", displayName: "Update Issue", description: "Update issue status or assignee", parameters: ["issueId", "state", "assigneeId"] },
-    { name: "LINEAR_CREATE_PROJECT", displayName: "Create Project", description: "Create a new Linear project", parameters: ["name", "teamId"] },
+    { name: "LINEAR_CREATE_LINEAR_ISSUE", displayName: "Create Issue", description: "Create a new Linear issue", parameters: ["title", "description", "team_id", "priority"] },
+    { name: "LINEAR_LIST_LINEAR_ISSUES", displayName: "List Issues", description: "Get issues assigned to you", parameters: ["team_id", "state"] },
+    { name: "LINEAR_UPDATE_LINEAR_ISSUE", displayName: "Update Issue", description: "Update issue status or assignee", parameters: ["issue_id", "state", "assignee_id"] },
+    { name: "LINEAR_CREATE_PROJECT", displayName: "Create Project", description: "Create a new Linear project", parameters: ["name", "team_id"] },
+    { name: "LINEAR_GET_ISSUE_BY_ID", displayName: "Get Issue", description: "Get a specific issue by ID", parameters: ["issue_id"] },
   ],
   jira: [
     { name: "JIRA_CREATE_ISSUE", displayName: "Create Issue", description: "Create a Jira issue or bug", parameters: ["project", "summary", "issuetype", "description"] },
-    { name: "JIRA_LIST_ISSUES", displayName: "List Issues", description: "Search Jira issues with JQL", parameters: ["jql", "maxResults"] },
-    { name: "JIRA_UPDATE_ISSUE", displayName: "Update Issue", description: "Transition or update a Jira issue", parameters: ["issueIdOrKey", "fields"] },
-    { name: "JIRA_ADD_COMMENT", displayName: "Add Comment", description: "Comment on a Jira issue", parameters: ["issueIdOrKey", "body"] },
+    { name: "JIRA_SEARCH_USING_JQL", displayName: "Search Issues", description: "Search Jira issues with JQL", parameters: ["jql", "max_results"] },
+    { name: "JIRA_EDIT_ISSUE", displayName: "Update Issue", description: "Transition or update a Jira issue", parameters: ["issue_id_or_key", "fields"] },
+    { name: "JIRA_ADD_COMMENT", displayName: "Add Comment", description: "Comment on a Jira issue", parameters: ["issue_id_or_key", "body"] },
+    { name: "JIRA_GET_ISSUE", displayName: "Get Issue", description: "Get details of a specific Jira issue", parameters: ["issue_id_or_key"] },
   ],
   asana: [
     { name: "ASANA_CREATE_TASK", displayName: "Create Task", description: "Add a task to an Asana project", parameters: ["name", "projects", "due_on", "notes"] },
-    { name: "ASANA_LIST_TASKS", displayName: "List Tasks", description: "Get tasks from a project", parameters: ["project", "assignee"] },
+    { name: "ASANA_GET_TASKS_LIST", displayName: "List Tasks", description: "Get tasks from a project", parameters: ["project_gid", "assignee"] },
     { name: "ASANA_UPDATE_TASK", displayName: "Update Task", description: "Mark task complete or update fields", parameters: ["task_gid", "completed", "name"] },
     { name: "ASANA_CREATE_PROJECT", displayName: "Create Project", description: "Create a new Asana project", parameters: ["name", "team", "workspace"] },
   ],
   trello: [
-    { name: "TRELLO_CREATE_CARD", displayName: "Create Card", description: "Add a card to a Trello list", parameters: ["name", "idList", "desc"] },
+    { name: "TRELLO_CREATE_CARD", displayName: "Create Card", description: "Add a card to a Trello list", parameters: ["name", "id_list", "desc"] },
     { name: "TRELLO_LIST_BOARDS", displayName: "List Boards", description: "Get all Trello boards for a member", parameters: [] },
-    { name: "TRELLO_MOVE_CARD", displayName: "Move Card", description: "Move a card to a different list", parameters: ["id", "idList"] },
-    { name: "TRELLO_ADD_COMMENT", displayName: "Add Comment", description: "Post a comment on a Trello card", parameters: ["id", "text"] },
+    { name: "TRELLO_MOVE_CARD", displayName: "Move Card", description: "Move a card to a different list", parameters: ["id", "id_list"] },
+    { name: "TRELLO_ADD_COMMENT_TO_CARD", displayName: "Add Comment", description: "Post a comment on a Trello card", parameters: ["id", "text"] },
   ],
   hubspot: [
     { name: "HUBSPOT_CREATE_CONTACT", displayName: "Create Contact", description: "Add a new contact to HubSpot CRM", parameters: ["email", "firstname", "lastname"] },
@@ -92,134 +129,186 @@ const CURATED_ACTIONS: Record<string, Array<{ name: string; displayName: string;
     { name: "STRIPE_GET_BALANCE", displayName: "Get Balance", description: "Retrieve current Stripe balance", parameters: [] },
   ],
   googledrive: [
-    { name: "GOOGLEDRIVE_LIST_FILES", displayName: "List Files", description: "Browse files in Google Drive", parameters: ["query", "pageSize"] },
-    { name: "GOOGLEDRIVE_CREATE_FILE", displayName: "Upload File", description: "Create or upload a file to Drive", parameters: ["name", "content", "mimeType"] },
-    { name: "GOOGLEDRIVE_SHARE_FILE", displayName: "Share File", description: "Share a file with a user", parameters: ["fileId", "email", "role"] },
+    { name: "GOOGLEDRIVE_LIST_FILES", displayName: "List Files", description: "Browse files in Google Drive", parameters: ["query", "page_size"] },
+    { name: "GOOGLEDRIVE_CREATE_FILE", displayName: "Upload File", description: "Create or upload a file to Drive", parameters: ["name", "content", "mime_type"] },
+    { name: "GOOGLEDRIVE_SHARE_FILE", displayName: "Share File", description: "Share a file with a user", parameters: ["file_id", "email", "role"] },
+    { name: "GOOGLEDRIVE_FIND_FILE", displayName: "Find File", description: "Search for a file in Drive", parameters: ["name", "query"] },
   ],
   twitter: [
-    { name: "TWITTER_CREATE_TWEET", displayName: "Post Tweet", description: "Publish a tweet to Twitter/X", parameters: ["text"] },
-    { name: "TWITTER_GET_MENTIONS", displayName: "Get Mentions", description: "Fetch your latest mentions", parameters: ["max_results"] },
-    { name: "TWITTER_SEARCH_TWEETS", displayName: "Search Tweets", description: "Search Twitter for a keyword", parameters: ["query", "max_results"] },
+    { name: "TWITTER_CREATION_OF_A_POST", displayName: "Post Tweet", description: "Publish a tweet to Twitter/X", parameters: ["text"] },
+    { name: "TWITTER_FETCH_MENTIONS", displayName: "Get Mentions", description: "Fetch your latest mentions", parameters: ["max_results"] },
+    { name: "TWITTER_SEARCH_TWITTER", displayName: "Search Tweets", description: "Search Twitter for a keyword", parameters: ["query", "max_results"] },
   ],
   discord: [
-    { name: "DISCORD_SEND_MESSAGE", displayName: "Send Message", description: "Post to a Discord channel", parameters: ["channel_id", "content"] },
-    { name: "DISCORD_GET_MESSAGES", displayName: "Get Messages", description: "Read messages from a channel", parameters: ["channel_id", "limit"] },
+    { name: "DISCORD_SENDS_A_MESSAGE_TO_A_DISCORD_CHANNEL", displayName: "Send Message", description: "Post to a Discord channel", parameters: ["channel_id", "content"] },
+    { name: "DISCORD_LIST_GUILD_CHANNELS", displayName: "List Channels", description: "List all channels in a server", parameters: ["guild_id"] },
+    { name: "DISCORD_GET_MESSAGES_FROM_A_CHANNEL", displayName: "Get Messages", description: "Read messages from a channel", parameters: ["channel_id", "limit"] },
   ],
   zoom: [
     { name: "ZOOM_CREATE_MEETING", displayName: "Create Meeting", description: "Schedule a Zoom meeting", parameters: ["topic", "start_time", "duration"] },
     { name: "ZOOM_LIST_MEETINGS", displayName: "List Meetings", description: "Get upcoming Zoom meetings", parameters: [] },
+    { name: "ZOOM_GET_MEETING_DETAILS", displayName: "Get Meeting Details", description: "Get details of a specific meeting", parameters: ["meeting_id"] },
   ],
   shopify: [
     { name: "SHOPIFY_LIST_PRODUCTS", displayName: "List Products", description: "Retrieve Shopify products", parameters: ["limit", "status"] },
     { name: "SHOPIFY_CREATE_PRODUCT", displayName: "Create Product", description: "Add a new product to your store", parameters: ["title", "price", "vendor"] },
     { name: "SHOPIFY_GET_ORDERS", displayName: "Get Orders", description: "List recent store orders", parameters: ["limit", "status"] },
   ],
+  outlook: [
+    { name: "OUTLOOK_SEND_EMAIL", displayName: "Send Email", description: "Send an email via Outlook", parameters: ["to", "subject", "body"] },
+    { name: "OUTLOOK_LIST_EMAILS", displayName: "List Emails", description: "Fetch emails from Outlook inbox", parameters: ["max_results"] },
+    { name: "OUTLOOK_GET_CALENDAR_EVENTS", displayName: "List Calendar Events", description: "Get upcoming calendar events", parameters: ["start_date", "end_date"] },
+    { name: "OUTLOOK_CREATE_EVENT", displayName: "Create Calendar Event", description: "Create an event in Outlook Calendar", parameters: ["subject", "start", "end"] },
+  ],
 };
 
-// ─── Apps ────────────────────────────────────────────────────────────────────
-
-router.get("/apps", async (_req, res) => {
-  try {
-    const r = await composioFetch("/apps");
-    if (!r.ok) { const e = await r.text(); res.status(r.status).json({ error: e }); return; }
-    const data = await r.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+// Flat list of all actions for quick lookup
+function findAction(name: string) {
+  for (const [appKey, acts] of Object.entries(CURATED_ACTIONS)) {
+    const a = acts.find(x => x.name.toLowerCase() === name.toLowerCase());
+    if (a) return { ...a, appKey };
   }
+  return null;
+}
+
+// ─── Apps ─────────────────────────────────────────────────────────────────────
+
+router.get("/apps", async (_req, res: Response) => {
+  try {
+    const r = await v1("/apps");
+    if (!r.ok) { const e = await safeJson(r); res.status(r.status).json(e); return; }
+    const data = await safeJson(r);
+    res.json(data);
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/apps/:appName", async (req, res) => {
+router.get("/apps/:appName", async (req: Request, res: Response) => {
   try {
-    // Search the app in the full list
-    const r = await composioFetch("/apps");
+    const r = await v1("/apps");
     if (!r.ok) { res.status(r.status).json({ error: "Apps unavailable" }); return; }
-    const data = await r.json();
+    const data = await safeJson(r);
     const app = (data.items || []).find(
       (a: any) => a.key === req.params.appName || a.name === req.params.appName
     );
     if (!app) { res.status(404).json({ error: "App not found" }); return; }
-    // Attach curated actions
     const actions = CURATED_ACTIONS[app.key] || [];
     res.json({ ...app, actions, actionsCount: actions.length });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Connections ─────────────────────────────────────────────────────────────
+// ─── Connections ──────────────────────────────────────────────────────────────
 
-router.get("/connections", async (req, res) => {
+// GET all connections for an entity (v3)
+router.get("/connections", async (req: Request, res: Response) => {
   const entityId = (req.query.entityId as string) || "default";
   const appName = req.query.appName as string | undefined;
   try {
-    const params = new URLSearchParams({ entityId });
-    if (appName) params.set("appName", appName);
-    const r = await composioFetch(`/connectedAccounts?${params}`);
-    if (!r.ok) { const e = await r.text(); res.status(r.status).json({ error: e }); return; }
-    const data = await r.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    // v3 uses user_uuid + optional toolkit
+    const params = new URLSearchParams({ user_uuid: entityId, limit: "50" });
+    if (appName) params.set("toolkit", appName);
+    const r = await v3(`/connected_accounts?${params}`);
+    if (!r.ok) {
+      // fallback to v1
+      const p2 = new URLSearchParams({ entityId });
+      if (appName) p2.set("appName", appName);
+      const r2 = await v1(`/connectedAccounts?${p2}`);
+      if (!r2.ok) { res.json({ items: [], total: 0 }); return; }
+      const d2 = await safeJson(r2);
+      res.json(d2);
+      return;
+    }
+    const data = await safeJson(r);
+    // Normalize v3 response to match v1 shape
+    const items = (data.items || []).map((c: any) => ({
+      id: c.id,
+      uuid: c.deprecated?.uuid,
+      appName: c.toolkit?.slug || c.appName,
+      status: c.status,
+      entityId: c.user_id || entityId,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      authScheme: c.authScheme || c.auth_config?.auth_scheme,
+    }));
+    res.json({ items, total: data.total || items.length });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/connections/:id", async (req, res) => {
+// GET single connection by ID (v3 short ID or UUID)
+router.get("/connections/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
   try {
-    const r = await composioFetch(`/connectedAccounts/${req.params.id}`);
-    if (!r.ok) { res.status(r.status).json({ error: "Connection not found" }); return; }
-    const data = await r.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    // Try v3 first (short ID like ca_XXXXX)
+    const r = await v3(`/connected_accounts/${id}`);
+    if (r.ok) {
+      const data = await safeJson(r);
+      res.json({
+        id: data.id,
+        uuid: data.deprecated?.uuid,
+        appName: data.toolkit?.slug,
+        status: data.status,
+        entityId: data.user_id,
+        redirectUrl: data.data?.redirectUrl || data.redirect_url,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at,
+      });
+      return;
+    }
+    // Fallback v1
+    const r2 = await v1(`/connectedAccounts/${id}`);
+    if (!r2.ok) { res.status(r2.status).json({ error: "Connection not found" }); return; }
+    res.json(await safeJson(r2));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/composio/connections/initiate
-// Full v3 API flow: find/create auth_config → create connected_account → return redirectUrl
-router.post("/connections/initiate", async (req, res) => {
+// GET connection status — poll for INITIATED → ACTIVE transition
+router.get("/connections/:id/status", async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const r = await v3(`/connected_accounts/${id}`);
+    if (!r.ok) { res.status(r.status).json({ status: "UNKNOWN", error: "Not found" }); return; }
+    const data = await safeJson(r);
+    res.json({
+      id: data.id,
+      status: data.status, // INITIATED | ACTIVE | FAILED | EXPIRED
+      appName: data.toolkit?.slug,
+      entityId: data.user_id,
+      isActive: data.status === "ACTIVE",
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// POST initiate OAuth connection (v3 flow)
+router.post("/connections/initiate", async (req: Request, res: Response) => {
   const { appName, entityId = "default" } = req.body;
   if (!appName) { res.status(400).json({ error: "appName is required" }); return; }
 
-  const apiKey = process.env.COMPOSIO_API_KEY;
-  if (!apiKey) { res.status(503).json({ error: "COMPOSIO_API_KEY not configured" }); return; }
-
-  const v3Base = "https://backend.composio.dev/api/v3";
-  const v3Headers = { "x-api-key": apiKey, "Content-Type": "application/json" };
-
-  const v3Get = (path: string) =>
-    fetch(`${v3Base}${path}`, { headers: v3Headers });
-  const v3Post = (path: string, body: Record<string, unknown>) =>
-    fetch(`${v3Base}${path}`, { method: "POST", headers: v3Headers, body: JSON.stringify(body) });
-
   try {
-    // ── Step 1: Find existing v3 auth_config for this app ─────────────────────
+    // Step 1: find existing auth_config with ac_ prefixed ID
     let authConfigId: string | null = null;
-
-    const acListRes = await v3Get(`/auth_configs?app_name=${encodeURIComponent(appName)}&limit=20`);
-    if (acListRes.ok) {
-      const acData = await acListRes.json().catch(() => ({}));
+    const acRes = await v3(`/auth_configs?app_name=${encodeURIComponent(appName)}&limit=20`);
+    if (acRes.ok) {
+      const acData = await safeJson(acRes);
       const found = (acData.items || []).find(
         (ac: any) =>
           (ac.toolkit?.slug?.toLowerCase() === appName.toLowerCase() ||
            ac.app_name?.toLowerCase() === appName.toLowerCase()) &&
           ac.status !== "DISABLED" && !ac.deleted
       );
-      if (found) authConfigId = found.id;  // e.g. "ac_V8jiZteAG4gA"
+      if (found) authConfigId = found.id;
     }
 
-    // ── Step 2: Create auth_config if none found ───────────────────────────────
+    // Step 2: create auth_config if none found
     if (!authConfigId) {
-      const createAcRes = await v3Post("/auth_configs", {
-        toolkit: { slug: appName },
-        type: "use_composio_auth",
+      const createRes = await v3("/auth_configs", {
+        method: "POST",
+        body: JSON.stringify({ toolkit: { slug: appName }, type: "use_composio_auth" }),
       });
-      if (createAcRes.ok) {
-        const created = await createAcRes.json().catch(() => ({}));
+      if (createRes.ok) {
+        const created = await safeJson(createRes);
         authConfigId = created.id || null;
       } else {
-        const e = await createAcRes.json().catch(() => ({}));
-        res.status(createAcRes.status).json({ error: e?.error?.message || "Failed to create auth config" });
+        const e = await safeJson(createRes);
+        res.status(createRes.status).json({ error: e?.error?.message || "Failed to create auth config" });
         return;
       }
     }
@@ -229,216 +318,428 @@ router.post("/connections/initiate", async (req, res) => {
       return;
     }
 
-    // ── Step 3: Create connected account (initiates OAuth) ────────────────────
-    const connRes = await v3Post("/connected_accounts", {
-      auth_config: { id: authConfigId },
-      connection: { user_uuid: entityId },
+    // Step 3: create connected_account → initiates OAuth
+    const connRes = await v3("/connected_accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        auth_config: { id: authConfigId },
+        connection: { user_uuid: entityId },
+      }),
     });
-    const connData = await connRes.json().catch(() => ({}));
-
+    const connData = await safeJson(connRes);
     if (!connRes.ok) {
       res.status(connRes.status).json({ error: connData?.error?.message || "Failed to initiate connection" });
       return;
     }
 
-    // Normalize response — v3 uses redirect_url (snake_case), frontend expects redirectUrl
     const redirectUrl = connData.redirect_url || connData.redirectUrl || connData.redirectUri || null;
     res.json({
       ...connData,
       redirectUrl,
-      connectionStatus: connData.status || connData.connectionStatus,
+      connectionStatus: connData.status || "INITIATED",
     });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete("/connections/:id", async (req, res) => {
+// DELETE connection
+router.delete("/connections/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
   try {
-    const r = await composioFetch(`/connectedAccounts/${req.params.id}`, { method: "DELETE" });
-    if (!r.ok) { const e = await r.text(); res.status(r.status).json({ error: e }); return; }
+    // Try v3 first
+    const r = await v3(`/connected_accounts/${id}`, { method: "DELETE" });
+    if (r.ok || r.status === 204) { res.status(204).end(); return; }
+    // Fallback v1
+    const r2 = await v1(`/connectedAccounts/${id}`, { method: "DELETE" });
+    if (!r2.ok) { const e = await safeJson(r2); res.status(r2.status).json(e); return; }
     res.status(204).end();
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 // ─── Integrations ─────────────────────────────────────────────────────────────
 
-router.get("/integrations", async (req, res) => {
+router.get("/integrations", async (req: Request, res: Response) => {
   const { appId, appName, page = "1", limit = "50" } = req.query;
   const params = new URLSearchParams({ page: page as string, limit: limit as string });
   if (appId) params.set("appId", appId as string);
   if (appName) params.set("appName", appName as string);
   try {
-    const r = await composioFetch(`/integrations?${params}`);
-    if (!r.ok) { const e = await r.text(); res.status(r.status).json({ error: e }); return; }
-    const data = await r.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    const r = await v1(`/integrations?${params}`);
+    if (!r.ok) { const e = await safeJson(r); res.status(r.status).json(e); return; }
+    res.json(await safeJson(r));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Actions (curated catalog + live fallback) ────────────────────────────────
+// ─── Actions ──────────────────────────────────────────────────────────────────
 
-router.get("/actions", async (req, res) => {
-  const { apps, useCase, limit = "20", search } = req.query;
-
+router.get("/actions", async (req: Request, res: Response) => {
+  const { apps, useCase, limit = "100", search } = req.query;
   try {
-    // Build from curated catalog
     let actions: any[] = [];
-
     if (apps) {
       const appList = (apps as string).split(",").map(s => s.trim().toLowerCase());
       for (const appKey of appList) {
-        const appActions = CURATED_ACTIONS[appKey] || [];
-        actions.push(...appActions.map(a => ({ ...a, appName: appKey })));
+        const acts = CURATED_ACTIONS[appKey] || [];
+        actions.push(...acts.map(a => ({ ...a, appName: appKey })));
       }
     } else {
-      // Return all curated actions
-      for (const [appKey, appActions] of Object.entries(CURATED_ACTIONS)) {
-        actions.push(...appActions.map(a => ({ ...a, appName: appKey })));
+      for (const [appKey, acts] of Object.entries(CURATED_ACTIONS)) {
+        actions.push(...acts.map(a => ({ ...a, appName: appKey })));
       }
     }
-
-    // Apply search filter
     if (search) {
       const q = (search as string).toLowerCase();
       actions = actions.filter(a =>
-        a.displayName.toLowerCase().includes(q) ||
-        a.description.toLowerCase().includes(q) ||
-        a.appName.toLowerCase().includes(q)
+        a.displayName.toLowerCase().includes(q) || a.description.toLowerCase().includes(q) || a.appName.toLowerCase().includes(q)
       );
     }
-
-    // Apply useCase filter (basic keyword match)
     if (useCase) {
       const q = (useCase as string).toLowerCase();
       actions = actions.filter(a =>
-        a.displayName.toLowerCase().includes(q) ||
-        a.description.toLowerCase().includes(q)
+        a.displayName.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
       );
     }
-
-    const limitN = parseInt(limit as string, 10) || 20;
-    const paged = actions.slice(0, limitN);
-
-    res.json({ items: paged, totalItems: actions.length, totalPages: Math.ceil(actions.length / limitN) });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    const limitN = parseInt(limit as string, 10) || 100;
+    res.json({ items: actions.slice(0, limitN), totalItems: actions.length, totalPages: Math.ceil(actions.length / limitN) });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/actions/:actionName", async (req, res) => {
-  const { actionName } = req.params;
-  for (const [appKey, actions] of Object.entries(CURATED_ACTIONS)) {
-    const action = actions.find(a => a.name === actionName);
-    if (action) {
-      res.json({ ...action, appName: appKey });
-      return;
-    }
-  }
-  res.status(404).json({ error: "Action not found" });
+router.get("/actions/:actionName", async (req: Request, res: Response) => {
+  const found = findAction(req.params.actionName);
+  if (!found) { res.status(404).json({ error: "Action not found" }); return; }
+  res.json(found);
 });
 
 // POST /api/composio/actions/execute
-router.post("/actions/execute", async (req, res) => {
-  const { actionName, input, connectedAccountId, entityId } = req.body;
+// v3 endpoint: POST /api/v3/tools/execute/{action_slug}
+// Body: { connected_account_id, entity_id, version, arguments }
+router.post("/actions/execute", async (req: Request, res: Response) => {
+  const { actionName, input = {}, entityId = "default", connectedAccountId } = req.body;
   if (!actionName) { res.status(400).json({ error: "actionName is required" }); return; }
+
+  const found = findAction(actionName);
+  const appName = found?.appKey || actionName.split("_")[0].toLowerCase();
+
   try {
-    const r = await composioFetch(`/actions/${actionName}/execute`, {
+    // Resolve connected_account_id (prefer v3 short ca_ ID)
+    let resolvedConnId: string | null = connectedAccountId || null;
+
+    if (!resolvedConnId) {
+      // Look up active connection for this entity + app
+      const lookup = await v3(`/connected_accounts?user_uuid=${entityId}&toolkit=${appName}&status=ACTIVE&limit=5`);
+      if (lookup.ok) {
+        const ld = await safeJson(lookup);
+        const conn = (ld.items || [])[0];
+        if (conn) {
+          resolvedConnId = conn.id; // Use v3 short ID (ca_XXXX) — v3 tools endpoint accepts it
+        } else {
+          // Also try without status filter in case INITIATED connections have become ACTIVE
+          const lookup2 = await v3(`/connected_accounts?user_uuid=${entityId}&toolkit=${appName}&limit=5`);
+          if (lookup2.ok) {
+            const ld2 = await safeJson(lookup2);
+            const conn2 = (ld2.items || []).find((c: any) => c.status === "ACTIVE");
+            if (conn2) {
+              resolvedConnId = conn2.id;
+            } else {
+              res.status(409).json({
+                error: `No active ${appName} connection for this user`,
+                code: "NO_ACTIVE_CONNECTION",
+                appName,
+                hint: `Connect ${appName} at /settings/integrations first`,
+              });
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    // ── Attempt 1: v3 tools/execute (correct endpoint per v3 docs) ────────────
+    const v3Body: Record<string, unknown> = {
+      arguments: input,
+      version: "latest",
+    };
+    if (resolvedConnId) v3Body.connected_account_id = resolvedConnId;
+    else v3Body.entity_id = entityId;
+
+    const r3 = await v3(`/tools/execute/${actionName}`, {
       method: "POST",
-      body: JSON.stringify({
-        input: input || {},
-        ...(connectedAccountId && { connectedAccountId }),
-        entityId: entityId || "default",
-      }),
+      body: JSON.stringify(v3Body),
     });
-    const data = await r.json();
-    if (!r.ok) { res.status(r.status).json(data); return; }
-    res.json(data);
+    const d3 = await safeJson(r3);
+
+    if (r3.ok) {
+      res.json({ ...d3, _engine: "v3" });
+      return;
+    }
+
+    // ── Attempt 2: v3.1 endpoint ───────────────────────────────────────────────
+    const r31 = await fetch(`https://backend.composio.dev/api/v3.1/tools/execute/${actionName}`, {
+      method: "POST",
+      headers: hdrs(),
+      body: JSON.stringify(v3Body),
+    });
+    const d31 = await safeJson(r31);
+    if (r31.ok) {
+      res.json({ ...d31, _engine: "v3.1" });
+      return;
+    }
+
+    // ── Attempt 3: v2 fallback with UUID ──────────────────────────────────────
+    let uuid: string | null = null;
+    if (resolvedConnId?.startsWith("ca_")) {
+      const sr = await v3(`/connected_accounts/${resolvedConnId}`);
+      if (sr.ok) { const sd = await safeJson(sr); uuid = sd.deprecated?.uuid || null; }
+    } else {
+      uuid = resolvedConnId;
+    }
+
+    const v2Body: Record<string, unknown> = { input };
+    if (uuid) v2Body.connectedAccountId = uuid;
+    else { v2Body.entityId = entityId; v2Body.appName = appName; }
+
+    const r2 = await v2(`/actions/${actionName}/execute`, { method: "POST", body: JSON.stringify(v2Body) });
+    const d2 = await safeJson(r2);
+    if (r2.ok) {
+      res.json({ ...d2, _engine: "v2" });
+      return;
+    }
+
+    // All attempts failed — return best error
+    const errDetail = d3?.error?.message || d3?.message || d2?.message || "Action execution failed";
+    res.status(r3.status || 400).json({ error: errDetail, details: { v3: d3, v2: d2 } });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Calendar Events ──────────────────────────────────────────────────────────
+
+// GET /api/composio/calendar/events — fetch real events from Google Calendar or Outlook
+router.get("/calendar/events", async (req: Request, res: Response) => {
+  const entityId = (req.query.entityId as string) || "default";
+  const provider = (req.query.provider as string) || "googlecalendar";
+  const timeMin = (req.query.timeMin as string) || new Date(Date.now() - 7 * 86400000).toISOString();
+  const timeMax = (req.query.timeMax as string) || new Date(Date.now() + 30 * 86400000).toISOString();
+
+  try {
+    // Check if connection is ACTIVE
+    const lookup = await v3(`/connected_accounts?user_uuid=${entityId}&toolkit=${provider}&status=ACTIVE&limit=5`);
+    if (!lookup.ok) {
+      res.json({ events: [], connected: false, error: "Could not check connections" });
+      return;
+    }
+    const ld = await safeJson(lookup);
+    const conn = (ld.items || [])[0];
+
+    if (!conn) {
+      res.json({ events: [], connected: false, provider });
+      return;
+    }
+
+    const connUuid = conn.deprecated?.uuid || conn.id;
+    const actionName = provider === "googlecalendar" ? "GOOGLECALENDAR_FIND_FREE_SLOTS" : "OUTLOOK_GET_CALENDAR_EVENTS";
+    const input = provider === "googlecalendar"
+      ? { time_min: timeMin, time_max: timeMax }
+      : { start_date: timeMin, end_date: timeMax };
+
+    const r = await v2(`/actions/${actionName}/execute`, {
+      method: "POST",
+      body: JSON.stringify({ input, connectedAccountId: connUuid }),
+    });
+
+    if (!r.ok) {
+      // Try fallback action name
+      const alt = provider === "googlecalendar" ? "GOOGLECALENDAR_GET_CURRENT_DATE_TIME" : "OUTLOOK_LIST_EMAILS";
+      const r2 = await v2(`/actions/${alt}/execute`, {
+        method: "POST",
+        body: JSON.stringify({ input: {}, connectedAccountId: connUuid }),
+      });
+      const d2 = await safeJson(r2);
+      res.json({ events: [], connected: true, provider, rawResponse: d2, warning: "Primary action failed, used fallback" });
+      return;
+    }
+
+    const data = await safeJson(r);
+    // Normalize events from Composio response
+    const raw = data?.response_data || data?.data || data || {};
+    const items = raw.items || raw.events || raw.value || [];
+    const events = items.map((e: any) => ({
+      id: e.id || e.iCalUID || String(Math.random()),
+      title: e.summary || e.subject || e.title || "Untitled Event",
+      startTime: e.start?.dateTime || e.start?.date || e.start || e.startDateTime,
+      endTime: e.end?.dateTime || e.end?.date || e.end || e.endDateTime,
+      description: e.description || e.body?.content || "",
+      location: e.location || "",
+      attendees: (e.attendees || []).map((a: any) => a.email || a.emailAddress?.address || a),
+      isAllDay: !!(e.start?.date && !e.start?.dateTime),
+      provider,
+    }));
+
+    res.json({ events, connected: true, provider, total: events.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.json({ events: [], connected: false, error: err.message });
+  }
+});
+
+// ─── Agent Context ────────────────────────────────────────────────────────────
+
+// GET /api/composio/agent-context — tool availability context for AI system prompts
+router.get("/agent-context", async (req: Request, res: Response) => {
+  const entityId = (req.query.entityId as string) || "default";
+  try {
+    const r = await v3(`/connected_accounts?user_uuid=${entityId}&limit=50`);
+    const data = r.ok ? await safeJson(r) : { items: [] };
+    const connections: Array<{ appName: string; status: string; id: string }> =
+      (data.items || []).map((c: any) => ({
+        appName: c.toolkit?.slug,
+        status: c.status,
+        id: c.id,
+      }));
+
+    const active = connections.filter(c => c.status === "ACTIVE");
+    const activeApps = active.map(c => c.appName);
+
+    // Build available tools list
+    const availableTools: any[] = [];
+    for (const [appKey, actions] of Object.entries(CURATED_ACTIONS)) {
+      for (const action of actions) {
+        availableTools.push({
+          name: action.name,
+          displayName: action.displayName,
+          description: action.description,
+          app: appKey,
+          connected: activeApps.includes(appKey),
+          parameters: action.parameters,
+        });
+      }
+    }
+
+    const connectedTools = availableTools.filter(t => t.connected);
+
+    // System prompt injection
+    const systemContext = active.length > 0
+      ? `\n\n## Connected Apps & Available Tools\nYou have access to ${connectedTools.length} tools from ${active.length} connected apps:\n${active.map(c => `- **${c.appName}** (connected)`).join("\n")}\n\nWhen a user asks you to perform an action in a connected app, you MUST execute it using the available tools. For example:\n- "Create a GitHub issue" → use GITHUB_CREATE_ISSUE\n- "Send a Slack message" → use SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL\n- "List my calendar events" → use GOOGLECALENDAR_FIND_FREE_SLOTS\n\nIf you use a tool, respond with a JSON block like:\n\`\`\`tool_call\n{"action": "ACTION_NAME", "input": {...}}\n\`\`\``
+      : `\n\n## Tools Available\nNo apps are connected yet. ${Object.keys(CURATED_ACTIONS).length} apps are available to connect at /settings/integrations. Once connected, you can execute actions like creating issues, sending messages, and managing calendar events.`;
+
+    res.json({
+      activeConnections: active,
+      totalConnections: connections.length,
+      connectedApps: activeApps,
+      connectedTools,
+      allTools: availableTools,
+      systemContext,
+    });
+  } catch (err: any) {
+    res.json({
+      activeConnections: [],
+      connectedApps: [],
+      connectedTools: [],
+      systemContext: "\n\n## Tools\nComposio tools are temporarily unavailable.",
+    });
   }
 });
 
 // ─── Triggers ─────────────────────────────────────────────────────────────────
 
-// GET /api/composio/triggers — available trigger types
-router.get("/triggers", async (req, res) => {
-  const { appNames, limit = "50" } = req.query;
+router.get("/triggers", async (req: Request, res: Response) => {
+  const { appNames, limit = "100" } = req.query;
   const params = new URLSearchParams();
   if (appNames) params.set("appNames", appNames as string);
   try {
-    const r = await composioFetch(`/triggers?${params}`);
-    if (!r.ok) { const e = await r.text(); res.status(r.status).json({ error: e }); return; }
-    const raw = await r.json();
-    // v1 returns a raw array — normalize to {items, total}
+    const r = await v1(`/triggers?${params}`);
+    if (!r.ok) { res.json({ items: [], total: 0 }); return; }
+    const raw = await safeJson(r);
     const items: any[] = Array.isArray(raw) ? raw : (raw.items || []);
-    const filtered = limit ? items.slice(0, parseInt(limit as string, 10)) : items;
+    const filtered = items.slice(0, parseInt(limit as string, 10));
     res.json({ items: filtered, total: items.length });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { res.json({ items: [], total: 0, error: err.message }); }
 });
 
-// GET /api/composio/triggers/instances — active trigger subscriptions
-router.get("/triggers/instances", async (req, res) => {
+router.get("/triggers/instances", async (req: Request, res: Response) => {
   const { entityId = "default", connectedAccountId } = req.query;
   const params = new URLSearchParams({ entityId: entityId as string });
   if (connectedAccountId) params.set("connectedAccountId", connectedAccountId as string);
   try {
-    const r = await composioFetch(`/triggers/active_triggers?${params}`);
-    if (!r.ok) {
-      // Fallback: return empty list if endpoint is not available
-      res.json({ items: [], total: 0 });
-      return;
-    }
-    const raw = await r.json();
+    const r = await v1(`/triggers/active_triggers?${params}`);
+    if (!r.ok) { res.json({ items: [], total: 0 }); return; }
+    const raw = await safeJson(r);
     const items: any[] = Array.isArray(raw) ? raw : (raw.triggers || raw.items || []);
     res.json({ items, total: items.length });
-  } catch (err: any) {
-    res.json({ items: [], total: 0 });
-  }
+  } catch (err: any) { res.json({ items: [], total: 0 }); }
 });
 
-// POST /api/composio/triggers/subscribe — subscribe to a trigger
-router.post("/triggers/subscribe", async (req, res) => {
+router.post("/triggers/subscribe", async (req: Request, res: Response) => {
   const { triggerName, connectedAccountId, config = {}, entityId = "default" } = req.body;
   if (!triggerName || !connectedAccountId) {
-    res.status(400).json({ error: "triggerName and connectedAccountId are required" });
-    return;
+    res.status(400).json({ error: "triggerName and connectedAccountId are required" }); return;
   }
   try {
-    const r = await composioFetch(`/triggers/${connectedAccountId}/${triggerName}`, {
+    const r = await v1(`/triggers/${connectedAccountId}/${triggerName}`, {
       method: "POST",
       body: JSON.stringify({ triggerConfig: config }),
     });
-    const data = await r.json().catch(() => ({}));
+    const data = await safeJson(r);
     if (!r.ok) { res.status(r.status).json(data); return; }
     res.json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE /api/composio/triggers/instances/:id — unsubscribe a trigger
-router.delete("/triggers/instances/:id", async (req, res) => {
+router.delete("/triggers/instances/:id", async (req: Request, res: Response) => {
   try {
-    const r = await composioFetch(`/triggers/active_triggers/${req.params.id}`, {
-      method: "DELETE",
-    });
-    if (!r.ok) { const e = await r.text(); res.status(r.status).json({ error: e }); return; }
+    const r = await v1(`/triggers/active_triggers/${req.params.id}`, { method: "DELETE" });
+    if (!r.ok) { const e = await safeJson(r); res.status(r.status).json(e); return; }
     res.status(204).end();
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Webhook ──────────────────────────────────────────────────────────────────
+
+// POST /api/composio/webhook — receives trigger events from Composio
+router.post("/webhook", async (req: Request, res: Response) => {
+  // Acknowledge immediately (Composio expects fast 200)
+  res.status(200).json({ received: true });
+
+  const body = req.body || {};
+  const event = {
+    id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    triggerName: body.triggerName || body.trigger_name || body.event || "unknown",
+    appName: body.appName || body.app_name || body.metadata?.appName || "unknown",
+    entityId: body.entityId || body.entity_id || body.metadata?.entityId || "default",
+    payload: body.payload || body.data || body,
+    receivedAt: new Date().toISOString(),
+  };
+
+  // Push to ring buffer
+  WEBHOOK_EVENTS.unshift(event);
+  if (WEBHOOK_EVENTS.length > MAX_WEBHOOK_EVENTS) {
+    WEBHOOK_EVENTS.splice(MAX_WEBHOOK_EVENTS);
   }
 });
 
-// ─── MCP ─────────────────────────────────────────────────────────────────────
+// GET /api/composio/webhook/events — serve recent events
+router.get("/webhook/events", (_req: Request, res: Response) => {
+  res.json({ events: WEBHOOK_EVENTS, total: WEBHOOK_EVENTS.length });
+});
 
-router.get("/mcp", (req, res) => {
+// GET /api/composio/webhook/config — instructions for setting up webhook
+router.get("/webhook/config", (req: Request, res: Response) => {
+  const host = req.headers.host || "your-app.replit.app";
+  const protocol = req.headers["x-forwarded-proto"] || "https";
+  const webhookUrl = `${protocol}://${host}/api/composio/webhook`;
+  res.json({
+    webhookUrl,
+    instructions: [
+      "1. Go to https://app.composio.dev/settings",
+      "2. Navigate to Webhooks section",
+      `3. Add webhook URL: ${webhookUrl}`,
+      "4. Select triggers you want to receive",
+      "5. Save and activate",
+    ],
+    note: "Composio will POST trigger events to this URL. Events are stored in memory (last 100).",
+  });
+});
+
+// ─── MCP ──────────────────────────────────────────────────────────────────────
+
+router.get("/mcp", (req: Request, res: Response) => {
   const apiKey = process.env.COMPOSIO_API_KEY;
   if (!apiKey) { res.status(503).json({ error: "COMPOSIO_API_KEY not configured" }); return; }
   const entityId = (req.query.entityId as string) || "default";
@@ -450,22 +751,24 @@ router.get("/mcp", (req, res) => {
     description: "1,033 tool integrations with OAuth handling for AI agents",
     version: "v3",
     supportedApps: Object.keys(CURATED_ACTIONS),
+    endpoints: {
+      sse: `https://mcp.composio.dev/sse?apiKey=${apiKey}`,
+      http: `https://mcp.composio.dev?apiKey=${apiKey}`,
+    },
   });
 });
 
 // ─── Status ───────────────────────────────────────────────────────────────────
 
-router.get("/status", async (_req, res) => {
+router.get("/status", async (_req: Request, res: Response) => {
   const apiKey = process.env.COMPOSIO_API_KEY;
   if (!apiKey) { res.json({ configured: false, error: "COMPOSIO_API_KEY not set" }); return; }
   try {
-    const r = await composioFetch("/client/auth/client_info");
+    const r = await v1("/client/auth/client_info");
     if (!r.ok) { res.json({ configured: true, valid: false, status: r.status }); return; }
-    const data = await r.json();
+    const data = await safeJson(r);
     res.json({ configured: true, valid: true, info: data });
-  } catch (err: any) {
-    res.json({ configured: true, valid: false, error: err.message });
-  }
+  } catch (err: any) { res.json({ configured: true, valid: false, error: err.message }); }
 });
 
 export default router;
