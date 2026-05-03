@@ -132,6 +132,33 @@ export default function GmailInboxView() {
   const [hasMore, setHasMore] = useState(false);
   const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const sseRef = useRef<EventSource | null>(null);
+
+  // ── Real-time SSE: auto-refresh inbox when new Gmail event arrives ────────
+  useEffect(() => {
+    const es = new EventSource(`${BASE}/api/composio/webhook/stream`);
+    sseRef.current = es;
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        const evt = msg.event || (msg.type === "init" ? null : msg);
+        if (!evt) return;
+        const name = (evt.triggerName || "").toLowerCase();
+        if (name.includes("gmail") || name.includes("email") || name.includes("mail")) {
+          const subjectPreview = evt.payload?.subject || evt.payload?.emailData?.subject || "";
+          const fromPreview = evt.payload?.sender || evt.payload?.from || evt.payload?.emailData?.from || "";
+          toast.info(
+            `📧 New email${subjectPreview ? `: ${String(subjectPreview).slice(0, 50)}` : ""}`,
+            { description: fromPreview ? String(fromPreview).slice(0, 60) : undefined, duration: 5000 }
+          );
+          // Trigger background refresh after a short delay so Gmail has indexed it
+          setTimeout(() => fetchEmails(folder, undefined, false), 2000);
+        }
+      } catch { /* ignore */ }
+    };
+    return () => { es.close(); sseRef.current = null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [BASE, folder]);
 
   const fetchEmails = useCallback(async (q?: string, pageToken?: string, append = false) => {
     // Cancel any in-flight primary fetch

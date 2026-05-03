@@ -230,6 +230,36 @@ export default function AgentsPanel() {
     if (activeView === "tools") fetchComposioData();
   }, [activeView, fetchComposioData]);
 
+  // ── Real-time SSE: toast live webhook events from all connected apps ──────
+  useEffect(() => {
+    const es = new EventSource(`${BASE}/api/composio/webhook/stream`);
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type !== "event" || !msg.event) return;
+        const evt = msg.event;
+        const name = (evt.triggerName || "").toLowerCase();
+        // Skip Gmail — handled in GmailInboxView
+        if (name.includes("gmail") || name.includes("email")) return;
+        const app = (evt.appName || "").toLowerCase();
+        const label = evt.triggerName?.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()) || "Event";
+        const appEmoji: Record<string, string> = {
+          github: "🐙", slack: "💬", googlecalendar: "📅", notion: "📋",
+          linear: "🔷", jira: "🟦", discord: "🎮", zoom: "📹", asana: "✅",
+          trello: "🗂️", hubspot: "🟠", stripe: "💳", outlook: "🟦", twitter: "𝕏",
+        };
+        const emoji = appEmoji[app] || "⚡";
+        toast.info(`${emoji} ${label}`, {
+          description: `From ${evt.appName || "connected app"} · ${new Date(evt.receivedAt || Date.now()).toLocaleTimeString()}`,
+          duration: 4000,
+        });
+        // Refresh composio context if a new connection event comes in
+        if (name.includes("connect") || name.includes("auth")) fetchComposioData();
+      } catch { /* ignore */ }
+    };
+    return () => es.close();
+  }, [BASE, fetchComposioData]);
+
   const { data: providers = [] } = useListAiProviders() as { data: any[] };
   const defaultProvider = providers.find((p: any) => p.isDefault) || providers[0];
 
