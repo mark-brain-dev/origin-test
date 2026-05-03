@@ -1040,6 +1040,112 @@ function normalizeEmails(raw: any): Array<{
   });
 }
 
+// ─── Action Suggestion (NLP intent → best matching action) ────────────────────
+
+// POST /api/composio/actions/suggest
+// Given a user message, returns the best matching action(s) from connected apps
+router.post("/actions/suggest", async (req: Request, res: Response) => {
+  const { message, entityId = "default" } = req.body;
+  if (!message) { res.status(400).json({ error: "message is required" }); return; }
+
+  // Fetch active connections to filter suggestions to connected apps only
+  let connectedApps: string[] = [];
+  try {
+    const r = await v3(`/connected_accounts?user_uuid=${entityId}&status=ACTIVE&limit=50`);
+    if (r.ok) {
+      const d = await safeJson(r);
+      connectedApps = (d.items || []).map((c: any) => (c.toolkit?.slug || "").toLowerCase());
+    }
+  } catch { /* ignore */ }
+
+  const lower = message.toLowerCase();
+
+  // Keyword → action intent mapping
+  const INTENT_MAP: Array<{ keywords: string[]; action: string; app: string; priority?: number }> = [
+    // GitHub
+    { keywords: ["create issue", "new issue", "open issue", "file issue"], action: "GITHUB_CREATE_ISSUE", app: "github", priority: 10 },
+    { keywords: ["list issues", "show issues", "get issues", "my issues"], action: "GITHUB_LIST_ISSUES", app: "github", priority: 9 },
+    { keywords: ["create pr", "pull request", "new pr", "open pr"], action: "GITHUB_CREATE_PULL_REQUEST", app: "github", priority: 10 },
+    { keywords: ["list repos", "my repos", "repositories", "show repos"], action: "GITHUB_LIST_REPOS", app: "github", priority: 8 },
+    { keywords: ["commits", "list commits", "recent commits"], action: "GITHUB_LIST_COMMITS", app: "github", priority: 7 },
+    // Slack
+    { keywords: ["send slack", "message slack", "slack message", "post to slack", "dm slack"], action: "SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL", app: "slack", priority: 10 },
+    { keywords: ["slack channels", "list channels", "show channels"], action: "SLACK_LIST_ALL_SLACK_TEAM_CHANNEL", app: "slack", priority: 8 },
+    { keywords: ["slack history", "read slack", "messages from", "channel messages"], action: "SLACK_FETCH_MESSAGE_HISTORY_OF_A_SLACK_CHANNEL", app: "slack", priority: 8 },
+    // Gmail
+    { keywords: ["send email", "write email", "compose email", "email to"], action: "GMAIL_SEND_EMAIL", app: "gmail", priority: 10 },
+    { keywords: ["read emails", "list emails", "inbox", "fetch emails", "check email", "show emails"], action: "GMAIL_FETCH_EMAILS", app: "gmail", priority: 9 },
+    { keywords: ["reply email", "reply to", "respond to email"], action: "GMAIL_REPLY_TO_EMAIL_THREAD", app: "gmail", priority: 9 },
+    { keywords: ["draft email", "save draft"], action: "GMAIL_CREATE_EMAIL_DRAFT", app: "gmail", priority: 7 },
+    // Google Calendar
+    { keywords: ["list events", "calendar events", "upcoming events", "my schedule", "schedule for"], action: "GOOGLECALENDAR_LIST_EVENTS", app: "googlecalendar", priority: 10 },
+    { keywords: ["create event", "schedule meeting", "add to calendar", "new event", "book meeting"], action: "GOOGLECALENDAR_CREATE_EVENT", app: "googlecalendar", priority: 10 },
+    { keywords: ["free slots", "available times", "find time", "when am i free"], action: "GOOGLECALENDAR_FIND_FREE_SLOTS", app: "googlecalendar", priority: 9 },
+    { keywords: ["quick add", "add event quickly"], action: "GOOGLECALENDAR_QUICK_ADD", app: "googlecalendar", priority: 7 },
+    // Notion
+    { keywords: ["create page", "new notion page", "notion page"], action: "NOTION_CREATE_PAGE", app: "notion", priority: 10 },
+    { keywords: ["notion search", "search notion", "find page"], action: "NOTION_SEARCH_NOTION_PAGE", app: "notion", priority: 9 },
+    { keywords: ["notion database", "list databases"], action: "NOTION_LIST_DATABASES", app: "notion", priority: 8 },
+    // Linear
+    { keywords: ["linear issue", "create linear", "new linear issue"], action: "LINEAR_CREATE_LINEAR_ISSUE", app: "linear", priority: 10 },
+    { keywords: ["linear issues", "list linear", "my linear tasks"], action: "LINEAR_LIST_LINEAR_ISSUES", app: "linear", priority: 9 },
+    // Jira
+    { keywords: ["jira issue", "create jira", "new jira ticket", "bug report"], action: "JIRA_CREATE_ISSUE", app: "jira", priority: 10 },
+    { keywords: ["search jira", "jira search", "jql"], action: "JIRA_SEARCH_USING_JQL", app: "jira", priority: 9 },
+    // Discord
+    { keywords: ["discord message", "send discord", "post discord"], action: "DISCORD_SENDS_A_MESSAGE_TO_A_DISCORD_CHANNEL", app: "discord", priority: 10 },
+    // Zoom
+    { keywords: ["zoom meeting", "create zoom", "schedule zoom"], action: "ZOOM_CREATE_MEETING", app: "zoom", priority: 10 },
+    { keywords: ["list meetings", "zoom meetings", "upcoming meetings"], action: "ZOOM_LIST_MEETINGS", app: "zoom", priority: 9 },
+    // Google Drive
+    { keywords: ["list files", "drive files", "google drive", "find file"], action: "GOOGLEDRIVE_LIST_FILES", app: "googledrive", priority: 9 },
+    // Twitter
+    { keywords: ["tweet", "post tweet", "twitter post", "post on twitter"], action: "TWITTER_CREATION_OF_A_POST", app: "twitter", priority: 10 },
+    { keywords: ["mentions", "twitter mentions", "check mentions"], action: "TWITTER_FETCH_MENTIONS", app: "twitter", priority: 8 },
+    // HubSpot
+    { keywords: ["create contact", "new contact", "add contact", "hubspot contact"], action: "HUBSPOT_CREATE_CONTACT", app: "hubspot", priority: 10 },
+    { keywords: ["create deal", "new deal", "hubspot deal"], action: "HUBSPOT_CREATE_DEAL", app: "hubspot", priority: 10 },
+    // Stripe
+    { keywords: ["stripe balance", "check balance", "account balance"], action: "STRIPE_GET_BALANCE", app: "stripe", priority: 9 },
+    { keywords: ["stripe customers", "list customers", "customer list"], action: "STRIPE_LIST_CUSTOMERS", app: "stripe", priority: 8 },
+    // Asana
+    { keywords: ["asana task", "create asana", "new asana task"], action: "ASANA_CREATE_TASK", app: "asana", priority: 10 },
+    // Shopify
+    { keywords: ["shopify products", "list products", "product list"], action: "SHOPIFY_LIST_PRODUCTS", app: "shopify", priority: 9 },
+    { keywords: ["shopify orders", "list orders", "recent orders"], action: "SHOPIFY_GET_ORDERS", app: "shopify", priority: 9 },
+    // Outlook
+    { keywords: ["outlook email", "send outlook", "outlook message"], action: "OUTLOOK_SEND_EMAIL", app: "outlook", priority: 9 },
+    { keywords: ["outlook calendar", "outlook events", "outlook meetings"], action: "OUTLOOK_GET_CALENDAR_EVENTS", app: "outlook", priority: 9 },
+  ];
+
+  // Score each intent map entry
+  const scored = INTENT_MAP.map(entry => {
+    const matchCount = entry.keywords.filter(kw => lower.includes(kw)).length;
+    if (matchCount === 0) return null;
+    const action = findAction(entry.action);
+    return {
+      action: entry.action,
+      app: entry.app,
+      displayName: action?.displayName || entry.action,
+      description: action?.description || "",
+      parameters: action?.parameters || [],
+      score: matchCount * (entry.priority || 5),
+      connected: connectedApps.includes(entry.app),
+    };
+  }).filter(Boolean).sort((a, b) => (b!.score - a!.score));
+
+  const top = scored.slice(0, 5);
+
+  res.json({
+    message,
+    suggestions: top,
+    connectedApps,
+    hint: top.length > 0
+      ? `Best match: ${top[0]!.action} (${top[0]!.connected ? "connected" : "not connected"})`
+      : "No matching actions found. Try phrasing like: 'create github issue', 'send slack message', etc.",
+  });
+});
+
 // ─── Agent Context ────────────────────────────────────────────────────────────
 
 // GET /api/composio/agent-context — tool availability context for AI system prompts
@@ -1075,10 +1181,64 @@ router.get("/agent-context", async (req: Request, res: Response) => {
 
     const connectedTools = availableTools.filter(t => t.connected);
 
-    // System prompt injection
+    // Build per-app tool examples for the system prompt
+    const toolExamplesByApp = active.slice(0, 6).map(conn => {
+      const appActions = CURATED_ACTIONS[conn.appName] || [];
+      const examples = appActions.slice(0, 3).map(a => {
+        const paramExample = a.parameters.length > 0
+          ? `{"${a.parameters[0]}": "...", ${a.parameters.slice(1, 3).map(p => `"${p}": "..."`).join(", ")}}`
+          : "{}";
+        return `  - ${a.displayName} → \`\`\`tool_call\n{"action":"${a.name}","input":${paramExample}}\`\`\``;
+      }).join("\n");
+      return `**${conn.appName}** (connected):\n${examples || "  - (check available actions)"}`;
+    }).join("\n\n");
+
+    // System prompt injection — comprehensive tool instructions
     const systemContext = active.length > 0
-      ? `\n\n## Connected Apps & Available Tools\nYou have access to ${connectedTools.length} tools from ${active.length} connected apps:\n${active.map(c => `- **${c.appName}** (connected)`).join("\n")}\n\nWhen a user asks you to perform an action in a connected app, you MUST execute it using the available tools. For example:\n- "Create a GitHub issue" → use GITHUB_CREATE_ISSUE\n- "Send a Slack message" → use SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL\n- "List my calendar events" → use GOOGLECALENDAR_FIND_FREE_SLOTS\n\nIf you use a tool, respond with a JSON block like:\n\`\`\`tool_call\n{"action": "ACTION_NAME", "input": {...}}\n\`\`\``
-      : `\n\n## Tools Available\nNo apps are connected yet. ${Object.keys(CURATED_ACTIONS).length} apps are available to connect at /settings/integrations. Once connected, you can execute actions like creating issues, sending messages, and managing calendar events.`;
+      ? `
+
+## 🔧 Connected Apps & Tool Execution
+
+You have **${connectedTools.length} tools** available from **${active.length} connected apps**: ${activeApps.join(", ")}.
+
+### How to execute tools
+When the user asks you to perform an action in a connected app, you MUST respond with a \`tool_call\` JSON block. The system will execute it automatically and show results.
+
+Format:
+\`\`\`tool_call
+{"action": "ACTION_NAME", "input": {"param1": "value1", "param2": "value2"}}
+\`\`\`
+
+### Key rules
+1. **Always execute tools** when asked — never just describe what you would do.
+2. **Use exact action names** from the list below (ALL_CAPS_WITH_UNDERSCORES).
+3. **Include required params** — if a param is unknown, use a sensible default or ask the user.
+4. **On connection error** — tell user to connect the app in Settings → Integrations.
+5. **After execution** — the system synthesizes the result for you; you don't need to add "I'll now execute…".
+
+### Connected apps & example tool calls
+
+${toolExamplesByApp}
+
+### Quick reference
+${connectedTools.slice(0, 20).map(t => `- \`${t.name}\` — ${t.description}`).join("\n")}
+
+### Retry guidance
+If a tool call fails with a parameter error, retry with only the REQUIRED params (first 1-2 params). Drop optional ones.`
+      : `
+
+## Tools Available (Not Connected)
+No apps are currently connected. **${Object.keys(CURATED_ACTIONS).length} apps** are available to connect at Settings → Integrations.
+
+Once connected, you can:
+- Create GitHub issues, PRs, and comments
+- Send Slack messages and read channel history
+- List and create Google Calendar events
+- Send and read Gmail emails
+- Create Notion pages and query databases
+- And 200+ more actions across all connected apps
+
+Tell the user which specific app they should connect for their request.`;
 
     res.json({
       activeConnections: active,
@@ -1154,16 +1314,44 @@ router.delete("/triggers/instances/:id", async (req: Request, res: Response) => 
 // ─── Webhook ──────────────────────────────────────────────────────────────────
 
 // POST /api/composio/webhook — receives trigger events from Composio
+// Handles both Composio v1 and v3 webhook payload formats
 router.post("/webhook", async (req: Request, res: Response) => {
   res.status(200).json({ received: true });
 
   const body = req.body || {};
+
+  // ── Normalize trigger name across Composio v1 and v3 payload shapes ──────────
+  // v1: { triggerName, appName, payload, entityId }
+  // v3: { trigger: { name, slug }, toolkit: { slug }, data, user_id }
+  // GitHub style: { event, action, repository, sender }
+  const triggerName =
+    body.triggerName || body.trigger_name || body.trigger?.name || body.trigger?.slug ||
+    body.event || body.type || body.webhookEvent || "unknown";
+
+  const appName =
+    body.appName || body.app_name || body.toolkit?.slug || body.metadata?.appName ||
+    body.app || body.source ||
+    // Infer from trigger name prefix
+    (typeof triggerName === "string" && triggerName.includes("_") ? triggerName.split("_")[0].toLowerCase() : "unknown");
+
+  const entityId =
+    body.entityId || body.entity_id || body.user_id || body.metadata?.entityId || "default";
+
+  // Extract meaningful payload — prefer the inner data object
+  const payload =
+    body.payload || body.data || body.trigger_data ||
+    (() => {
+      // Strip meta fields, keep the meat
+      const { triggerName: _t, appName: _a, entityId: _e, event: _ev, ...rest } = body;
+      return rest;
+    })();
+
   const event = {
     id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    triggerName: body.triggerName || body.trigger_name || body.event || "unknown",
-    appName: body.appName || body.app_name || body.metadata?.appName || "unknown",
-    entityId: body.entityId || body.entity_id || body.metadata?.entityId || "default",
-    payload: body.payload || body.data || body,
+    triggerName,
+    appName,
+    entityId,
+    payload,
     receivedAt: new Date().toISOString(),
   };
 

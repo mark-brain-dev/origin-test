@@ -10,13 +10,21 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^1.3.22",
+    "@langchain/core": "^1.1.43",
+    "@langchain/langgraph": "^1.2.9",
+    "@langchain/openai": "^1.4.5",
+    "@nangohq/node": "^0.70.1",
+    "@opentelemetry/api": "^1.9.1",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
+    "ai": "^6.0.174",
     "composio-core": "^0.5.39",
     "cookie-parser": "^1.4.7",
     "cors": "^2",
     "drizzle-orm": "catalog:",
     "express": "^5",
+    "nango": "^0.70.1",
     "pino": "^9",
     "pino-http": "^10"
   },

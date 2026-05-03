@@ -10,6 +10,7 @@ import databasesRouter from "./databases";
 import eventsRouter from "./events";
 import meetingsRouter from "./meetings";
 import composioRouter from "./composio";
+import integrationsRouter from "./integrations";
 
 const router: IRouter = Router();
 
@@ -33,5 +34,6 @@ router.use("/skills", proxyToAiRouter("skills"));
 router.use("/search", searchRouter);
 router.use("/databases", databasesRouter);
 router.use("/composio", composioRouter);
+router.use("/integrations", integrationsRouter);
 
 export default router;

@@ -54,11 +54,13 @@ const QR_AUTH_APPS: Record<string, {
   botNumber?: string;
   codePrefix?: string;
   learnMore?: string;
+  category?: string;
 }> = {
   whatsapp: {
     method: "code",
     label: "WhatsApp",
     emoji: "💬",
+    category: "Messaging",
     description: "Link your WhatsApp via a verification code. A Nexus bot will request auth — approve it from your phone.",
     steps: [
       "Generate a code below",
@@ -75,6 +77,7 @@ const QR_AUTH_APPS: Record<string, {
     method: "phone",
     label: "Telegram",
     emoji: "✈️",
+    category: "Messaging",
     description: "Connect Telegram using your phone number. A verification code will be sent via Telegram.",
     steps: [
       "Enter your phone number (with country code)",
@@ -90,6 +93,7 @@ const QR_AUTH_APPS: Record<string, {
     method: "qr",
     label: "Signal",
     emoji: "🔒",
+    category: "Messaging",
     description: "Link Signal via the Beeper/Matrix bridge — scan the QR code with Signal on your phone to create a secure session.",
     steps: [
       "Open Signal on your phone",
@@ -103,6 +107,7 @@ const QR_AUTH_APPS: Record<string, {
     method: "token",
     label: "Discord",
     emoji: "💜",
+    category: "Community",
     description: "Connect Discord with a Bot Token for server-level access, or use OAuth for personal account access.",
     steps: [
       "Go to discord.com/developers/applications",
@@ -114,10 +119,200 @@ const QR_AUTH_APPS: Record<string, {
     inputPlaceholder: "MTxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     inputType: "password",
   },
+  imessage: {
+    method: "qr",
+    label: "iMessage",
+    emoji: "💬",
+    category: "Messaging",
+    description: "Bridge iMessage via Beeper's open-source Jelly bridge. Scan the QR code from your Mac to link your Apple ID session.",
+    steps: [
+      "Install Beeper's iMessage bridge (beeper.com or self-host)",
+      "Open the bridge setup on your Mac",
+      "Scan the QR code below with your iPhone (Settings → Linked Devices)",
+      "iMessage threads appear in Nexus inbox",
+    ],
+    learnMore: "https://github.com/beeper/imessage",
+  },
+  line: {
+    method: "qr",
+    label: "LINE",
+    emoji: "💚",
+    category: "Messaging",
+    description: "Connect LINE via QR code desktop login — scan with the LINE app on your phone to link your account.",
+    steps: [
+      "Open LINE on your smartphone",
+      "Tap ☰ → Settings → Linked Devices",
+      'Tap "Link a Device" and scan the QR below',
+      "Your LINE messages sync to Nexus",
+    ],
+    learnMore: "https://github.com/mautrix/line",
+  },
+  wechat: {
+    method: "qr",
+    label: "WeChat",
+    emoji: "🟢",
+    category: "Messaging",
+    description: "Scan the WeChat QR code with the WeChat app on your phone to connect your account via the official web bridge.",
+    steps: [
+      "Open WeChat on your phone",
+      "Tap the Discover icon → Scan QR Code",
+      "Scan the code below",
+      "WeChat Web session is linked to Nexus",
+    ],
+    learnMore: "https://github.com/AutumnWhj/ChatGPT-wechat-bot",
+  },
+  viber: {
+    method: "qr",
+    label: "Viber",
+    emoji: "🟣",
+    category: "Messaging",
+    description: "Link Viber Desktop to Nexus via QR code — same method as Viber Desktop app pairing.",
+    steps: [
+      "Open Viber on your smartphone",
+      "Tap ☰ → Settings → Desktop / Tablet",
+      "Scan the QR code below",
+      "Viber messages sync to Nexus inbox",
+    ],
+    learnMore: "https://github.com/nickolay/purple-viber",
+  },
+  instagram: {
+    method: "token",
+    label: "Instagram",
+    emoji: "📸",
+    category: "Social",
+    description: "Connect Instagram DMs via the Mautrix-Instagram bridge using your Instagram credentials. Requires self-hosted bridge.",
+    steps: [
+      "Self-host mautrix-instagram (docker or native)",
+      "Paste your Instagram session token (from bridge setup)",
+      "Instagram DMs appear in Nexus inbox",
+      "Supports text, images, and reactions",
+    ],
+    inputLabel: "Session Token",
+    inputPlaceholder: "mautrix-instagram session token",
+    inputType: "password",
+    learnMore: "https://github.com/mautrix/instagram",
+  },
+  messenger: {
+    method: "qr",
+    label: "Messenger",
+    emoji: "🔵",
+    category: "Social",
+    description: "Bridge Facebook Messenger via Beeper/Mautrix-Meta — scan QR with the Meta Devices flow to link your account.",
+    steps: [
+      "Install mautrix-meta bridge (beeper.com or self-host)",
+      "Go to Facebook → Settings → Devices → Add Device",
+      "Scan the QR code below",
+      "Messenger threads sync to Nexus",
+    ],
+    learnMore: "https://github.com/mautrix/meta",
+  },
+  slack_user: {
+    method: "token",
+    label: "Slack (User)",
+    emoji: "💬",
+    category: "Workspace",
+    description: "Connect your personal Slack account using a user OAuth token — reads DMs, channels, and threads.",
+    steps: [
+      "Go to api.slack.com/apps → Create App",
+      "Add scopes: channels:read, im:read, users:read",
+      "Install app to workspace → copy User OAuth Token",
+      "Paste token below to activate",
+    ],
+    inputLabel: "User OAuth Token",
+    inputPlaceholder: "xoxp-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    inputType: "password",
+    learnMore: "https://api.slack.com/authentication/token-types",
+  },
+  teams: {
+    method: "token",
+    label: "Microsoft Teams",
+    emoji: "💼",
+    category: "Workspace",
+    description: "Connect Microsoft Teams using a Bot Framework token — read channels, send messages, and receive mentions.",
+    steps: [
+      "Go to dev.botframework.com → New Bot",
+      "Register bot → generate App ID & Password",
+      "Copy the Bot Token from Azure portal",
+      "Paste below to link Teams to Nexus",
+    ],
+    inputLabel: "Bot Token / App Password",
+    inputPlaceholder: "Azure Bot Framework app password",
+    inputType: "password",
+    learnMore: "https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/create-a-bot-token",
+  },
+  matrix: {
+    method: "token",
+    label: "Matrix / Element",
+    emoji: "🔗",
+    category: "Workspace",
+    description: "Connect any Matrix homeserver using an access token from Element — read rooms, send messages, join spaces.",
+    steps: [
+      "Open Element (element.io) → Settings → Help & About",
+      "Scroll to Access Token → copy it",
+      "Enter your homeserver URL (e.g. matrix.org)",
+      "Paste token below to connect",
+    ],
+    inputLabel: "Access Token",
+    inputPlaceholder: "syt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    inputType: "password",
+    learnMore: "https://matrix.org",
+  },
+  rocketchat: {
+    method: "token",
+    label: "Rocket.Chat",
+    emoji: "🚀",
+    category: "Workspace",
+    description: "Connect Rocket.Chat using a Personal Access Token — read channels, DMs, and send messages from Nexus.",
+    steps: [
+      "Go to your Rocket.Chat → Avatar → My Account",
+      "Security → Personal Access Tokens → Create",
+      "Copy the token and your User ID",
+      "Paste both below to activate",
+    ],
+    inputLabel: "Personal Access Token",
+    inputPlaceholder: "paste-your-personal-access-token",
+    inputType: "password",
+    learnMore: "https://developer.rocket.chat/reference/api",
+  },
+  mattermost: {
+    method: "token",
+    label: "Mattermost",
+    emoji: "🔷",
+    category: "Workspace",
+    description: "Connect Mattermost using a Personal Access Token — available in self-hosted and cloud Mattermost instances.",
+    steps: [
+      "Go to Mattermost → Settings → Security → Personal Access Tokens",
+      "Create a new token → copy it",
+      "Enter your Mattermost server URL",
+      "Paste token below to connect",
+    ],
+    inputLabel: "Personal Access Token",
+    inputPlaceholder: "paste-mattermost-token",
+    inputType: "password",
+    learnMore: "https://developers.mattermost.com/integrate/reference/personal-access-token/",
+  },
+  kik: {
+    method: "token",
+    label: "Kik",
+    emoji: "🟡",
+    category: "Messaging",
+    description: "Connect Kik via bot API — create a Kik bot and receive/send messages to your Nexus workspace.",
+    steps: [
+      "Message @Botsworth on Kik to register a bot",
+      "Receive your bot's API key",
+      "Set webhook URL to your Nexus webhook endpoint",
+      "Paste API key below",
+    ],
+    inputLabel: "Kik Bot API Key",
+    inputPlaceholder: "your-kik-bot-api-key",
+    inputType: "password",
+    learnMore: "https://dev.kik.com/",
+  },
   beeper: {
     method: "qr",
     label: "Beeper (Matrix Bridge)",
     emoji: "🌉",
+    category: "Messaging",
     description: "Use Beeper/Matrix to bridge WhatsApp, Telegram, Signal, iMessage and 15+ chat apps into one unified inbox.",
     steps: [
       "Beeper bridges all major messaging apps",
@@ -743,26 +938,150 @@ function WebhookTab() {
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <Globe className="h-4 w-4 text-green-400" />
-            <h2 className="text-sm font-semibold text-foreground">Real-Time Push for All Apps</h2>
+            <h2 className="text-sm font-semibold text-foreground">Installed SDKs — Ready to Use</h2>
+            <Badge className="bg-green-500/15 text-green-400 border-green-500/30 border text-[10px] px-1.5 h-4">Installed</Badge>
           </div>
+          <p className="text-xs text-muted-foreground">These SDKs are installed and wired into the Nexus API server.</p>
           <div className="grid grid-cols-2 gap-3">
             {[
-              { name: "Nango", desc: "Unified API sync — real-time webhooks for 250+ APIs. Self-hostable.", url: "https://nango.dev", badge: "Open Source" },
-              { name: "Vercel AI SDK", desc: "Streaming AI responses + tool calls. Built for Next.js & React.", url: "https://sdk.vercel.ai", badge: "Streaming" },
-              { name: "LangChain", desc: "Chains, agents, and tools with real-time streaming callbacks.", url: "https://langchain.com", badge: "Agents" },
-              { name: "LangGraph", desc: "Stateful multi-agent orchestration with streaming and memory.", url: "https://langchain-ai.github.io/langgraph/", badge: "Multi-agent" },
+              { name: "Nango", desc: "Unified API sync — real-time webhooks for 250+ APIs. Self-hostable. Powers /api/integrations/nango.", url: "https://nango.dev", badge: "Open Source", installed: true },
+              { name: "Vercel AI SDK", desc: "Streaming AI responses + tool calls. Powering /api/ai chat streaming in Nexus.", url: "https://sdk.vercel.ai", badge: "Streaming", installed: true },
+              { name: "LangChain.js", desc: "Chains, agents, RAG, and tools. Powers /api/integrations/langchain endpoint.", url: "https://js.langchain.com", badge: "Agents", installed: true },
+              { name: "LangGraph.js", desc: "Stateful multi-agent orchestration. Powers /api/integrations/langgraph graph runs.", url: "https://langchain-ai.github.io/langgraphjs/", badge: "Multi-agent", installed: true },
             ].map(item => (
               <a key={item.name} href={item.url} target="_blank" rel="noopener noreferrer"
-                className="flex flex-col gap-2 p-4 rounded-xl border border-border/60 bg-card hover:border-green-500/30 hover:bg-green-500/5 transition-all group">
+                className="flex flex-col gap-2 p-4 rounded-xl border border-green-500/20 bg-green-500/5 hover:border-green-500/40 transition-all group">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-sm text-foreground flex items-center gap-1">
                     {item.name}
                     <ExternalLink className="h-3 w-3 text-muted-foreground/40 group-hover:text-muted-foreground" />
                   </span>
-                  <Badge className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20 border">{item.badge}</Badge>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] text-green-400">✓ installed</span>
+                    <Badge className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20 border">{item.badge}</Badge>
+                  </div>
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
               </a>
+            ))}
+          </div>
+        </div>
+
+        {/* MCP Servers */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-blue-400" />
+            <h2 className="text-sm font-semibold text-foreground">MCP Servers (Model Context Protocol)</h2>
+            <Badge className="bg-blue-500/15 text-blue-400 border-blue-500/30 border text-[10px] px-1.5 h-4">Anthropic Standard</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            MCP servers let any AI (Claude, GPT, Gemini) call tools and read context from external systems. Add them to any compatible client.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              {
+                name: "Chrome MCP (Google)",
+                emoji: "🌐",
+                desc: "Official Google Chrome DevTools Protocol MCP server. Lets AI browse, inspect, and automate Chrome/Chromium pages.",
+                url: "https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer",
+                badge: "Browser",
+                cmd: "npx @modelcontextprotocol/server-puppeteer",
+                color: "blue",
+              },
+              {
+                name: "Playwright MCP",
+                emoji: "🎭",
+                desc: "Microsoft's official Playwright MCP server — cross-browser automation (Chrome, Firefox, Safari) with visual snapshots.",
+                url: "https://github.com/microsoft/playwright-mcp",
+                badge: "Browser",
+                cmd: "npx @playwright/mcp",
+                color: "blue",
+              },
+              {
+                name: "Filesystem MCP",
+                emoji: "📁",
+                desc: "Official MCP server for local filesystem read/write — let AI access your files with fine-grained path restrictions.",
+                url: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+                badge: "Official",
+                cmd: "npx @modelcontextprotocol/server-filesystem",
+                color: "violet",
+              },
+              {
+                name: "GitHub MCP",
+                emoji: "🐙",
+                desc: "Official GitHub MCP server — let AI read repos, issues, PRs, and commit code directly via natural language.",
+                url: "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+                badge: "Official",
+                cmd: "npx @modelcontextprotocol/server-github",
+                color: "violet",
+              },
+              {
+                name: "Slack MCP",
+                emoji: "💬",
+                desc: "Official Slack MCP server — search messages, post to channels, and read channel history from any MCP client.",
+                url: "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
+                badge: "Official",
+                cmd: "npx @modelcontextprotocol/server-slack",
+                color: "violet",
+              },
+              {
+                name: "Memory MCP",
+                emoji: "🧠",
+                desc: "Persistent knowledge graph memory for AI — store facts, relations, and entities across conversations.",
+                url: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+                badge: "Official",
+                cmd: "npx @modelcontextprotocol/server-memory",
+                color: "violet",
+              },
+              {
+                name: "Brave Search MCP",
+                emoji: "🔍",
+                desc: "Real-time web search via Brave Search API — give AI live internet access without OpenAI/Bing API keys.",
+                url: "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
+                badge: "Search",
+                cmd: "npx @modelcontextprotocol/server-brave-search",
+                color: "amber",
+              },
+              {
+                name: "Postgres MCP",
+                emoji: "🐘",
+                desc: "Query and inspect your Postgres databases via natural language. Read-only mode available for safety.",
+                url: "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
+                badge: "Database",
+                cmd: "npx @modelcontextprotocol/server-postgres",
+                color: "amber",
+              },
+            ].map(tool => (
+              <div key={tool.name}
+                className="flex flex-col gap-2 p-4 rounded-xl border border-border/60 bg-card hover:border-blue-500/30 hover:bg-blue-500/5 transition-all">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-lg">{tool.emoji}</div>
+                    <div>
+                      <a href={tool.url} target="_blank" rel="noopener noreferrer"
+                        className="font-semibold text-xs text-foreground hover:text-primary flex items-center gap-0.5">
+                        {tool.name}
+                        <ExternalLink className="h-2.5 w-2.5 text-muted-foreground/40 ml-0.5" />
+                      </a>
+                      <Badge className={`text-[9px] px-1 h-3.5 mt-0.5 ${
+                        tool.color === "blue" ? "bg-blue-500/10 text-blue-400 border-blue-500/20" :
+                        tool.color === "amber" ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+                        "bg-violet-500/10 text-violet-400 border-violet-500/20"
+                      } border`}>{tool.badge}</Badge>
+                    </div>
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">{tool.desc}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <code className="flex-1 text-[9px] font-mono bg-black/20 px-2 py-1 rounded border border-border/30 text-muted-foreground truncate">{tool.cmd}</code>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(tool.cmd); toast.success("Copied!"); }}
+                    className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground flex-shrink-0"
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
             ))}
           </div>
         </div>
@@ -869,8 +1188,8 @@ export default function MarketplacePage() {
         }
       } catch { /* ignore */ }
 
-      // 15-second timeout — reset UI so user can retry
-      if (elapsed >= 15000) {
+      // 60-second timeout — reset UI so user can retry
+      if (elapsed >= 60000) {
         clearInterval(pollingRef.current!);
         delete pendingStartRef.current[appKey];
         // Remove INITIATED connections from local state so button resets
@@ -878,8 +1197,8 @@ export default function MarketplacePage() {
           prev.filter(c => !(c.appName?.toLowerCase() === appKey.toLowerCase() && c.status === "INITIATED"))
         );
         toast.warning(`${displayName} authorization timed out`, {
-          description: "The popup may have closed. Click Connect to try again.",
-          duration: 6000,
+          description: "If you completed sign-in, click Connect to try again or check Settings → Integrations.",
+          duration: 8000,
         });
       }
     }, 2000);

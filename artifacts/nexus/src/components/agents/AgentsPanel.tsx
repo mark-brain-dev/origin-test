@@ -313,7 +313,37 @@ export default function AgentsPanel() {
     setIsLoading(false);
   }, [agentContext]);
 
-  // Execute a Composio tool action
+  // Navigate to integrations settings
+  const goToIntegrations = useCallback(() => {
+    window.history.pushState(null, "", "/settings/integrations");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, []);
+
+  // Attempt a single tool execution POST
+  const doExecuteRequest = useCallback(async (action: string, input: Record<string, unknown>) => {
+    const r = await fetch(`${BASE}/api/composio/actions/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actionName: action, input, entityId: "default" }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, status: r.status, data };
+  }, [BASE]);
+
+  // Simplify params for retry — keep only first 1-2 non-empty string params
+  const simplifyInput = useCallback((action: string, input: Record<string, unknown>): Record<string, unknown> => {
+    const entries = Object.entries(input).filter(([, v]) => v !== null && v !== undefined && v !== "");
+    // Keep required-looking params (first 2 non-empty)
+    const simplified: Record<string, unknown> = {};
+    for (const [k, v] of entries.slice(0, 2)) simplified[k] = v;
+    // For list/get actions always include a reasonable default limit
+    if (action.includes("LIST") || action.includes("FETCH") || action.includes("GET")) {
+      simplified.max_results = simplified.max_results || simplified.limit || 10;
+    }
+    return simplified;
+  }, []);
+
+  // Execute a Composio tool action — with one automatic retry using simplified params
   const executeToolAction = useCallback(async (
     agentId: string,
     action: string,
@@ -325,40 +355,60 @@ export default function AgentsPanel() {
   ) => {
     setExecutingTool(action);
     try {
-      const r = await fetch(`${BASE}/api/composio/actions/execute`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actionName: action, input, entityId: "default" }),
-      });
-      const data = await r.json();
+      // ── Attempt 1: full params ───────────────────────────────────────────────
+      let { ok, data } = await doExecuteRequest(action, input);
 
+      // ── Attempt 2: if params error, retry with simplified params ─────────────
+      if (!ok && data.code !== "NO_ACTIVE_CONNECTION") {
+        const errMsg = (data.error || data.message || "").toLowerCase();
+        const isParamError = errMsg.includes("param") || errMsg.includes("required") ||
+          errMsg.includes("invalid") || errMsg.includes("missing") || errMsg.includes("argument");
+        if (isParamError && Object.keys(input).length > 1) {
+          const simplified = simplifyInput(action, input);
+          toast.info(`Retrying ${action} with simplified parameters…`, { duration: 2000 });
+          const retry = await doExecuteRequest(action, simplified);
+          if (retry.ok) { ok = true; data = retry.data; }
+        }
+      }
+
+      // Update the toolCall message in conversation
       setConversations(prev => {
         const msgs = [...(prev[agentId] || [])];
         if (msgs[messageIndex]?.toolCall) {
           msgs[messageIndex] = {
             ...msgs[messageIndex],
-            toolCall: {
-              ...msgs[messageIndex].toolCall!,
-              result: data,
-              status: r.ok ? "success" : "error",
-            },
+            toolCall: { ...msgs[messageIndex].toolCall!, result: data, status: ok ? "success" : "error" },
           };
         }
         return { ...prev, [agentId]: msgs };
       });
 
-      if (!r.ok) {
+      if (!ok) {
         if (data.code === "NO_ACTIVE_CONNECTION") {
-          toast.error(`No active ${data.appName} connection`, {
-            description: "Connect this app in Settings → Integrations first.",
-            action: { label: "Connect", onClick: () => { window.history.pushState(null, "", "/settings/integrations"); window.dispatchEvent(new PopStateEvent("popstate")); } },
+          const appName = data.appName || action.split("_")[0].toLowerCase();
+          toast.error(`${appName} not connected`, {
+            description: `Connect ${appName} in Integrations to run this action.`,
+            duration: 8000,
+            action: {
+              label: "Open Integrations",
+              onClick: goToIntegrations,
+            },
           });
         } else {
-          toast.error("Tool execution failed: " + (data.error || data.message || "Unknown"));
+          const errText = data.error || data.message || "Action failed";
+          toast.error(`${action} failed`, {
+            description: errText.slice(0, 120),
+            duration: 6000,
+          });
         }
       } else {
-        toast.success(`${action} completed`);
-        // Synthesize the result for the user if we have agent context
+        const appEmoji: Record<string, string> = {
+          github: "🐙", slack: "💬", gmail: "📧", googlecalendar: "📅", notion: "📋",
+          linear: "🔷", jira: "🟦", discord: "🎮", zoom: "📹", trello: "🗂️",
+        };
+        const appKey = action.split("_")[0].toLowerCase();
+        const emoji = appEmoji[appKey] || "⚡";
+        toast.success(`${emoji} ${action.replace(/_/g, " ").toLowerCase()} — done`);
         if (agent && conversationSnapshot) {
           await synthesizeToolResult(agentId, agent, action, data, conversationSnapshot, providerId);
         }
@@ -377,7 +427,7 @@ export default function AgentsPanel() {
       toast.error("Tool execution error: " + err.message);
     }
     setExecutingTool(null);
-  }, [synthesizeToolResult]);
+  }, [synthesizeToolResult, doExecuteRequest, simplifyInput, goToIntegrations]);
 
   const sendMessage = async () => {
     if (!prompt.trim() || !selectedAgent || isLoading) return;
@@ -454,19 +504,33 @@ export default function AgentsPanel() {
           defaultProvider?.id,
         );
       } else if (toolCall) {
-        // Tool call detected but app not connected
+        // Tool call detected but app not connected — show helpful connect message
         const appName = toolCall.action.split("_")[0].toLowerCase();
-        toast.warning(`${appName} not connected`, {
-          description: `Connect ${appName} in Settings → Integrations to execute this action.`,
-          duration: 6000,
+        const appEmoji: Record<string, string> = {
+          github: "🐙", slack: "💬", gmail: "📧", googlecalendar: "📅", notion: "📋",
+          linear: "🔷", jira: "🟦", discord: "🎮", zoom: "📹", trello: "🗂️",
+          googledrive: "📁", twitter: "𝕏", hubspot: "🟠", stripe: "💳", asana: "✅",
+          shopify: "🛒", outlook: "🟦",
+        };
+        const emoji = appEmoji[appName] || "🔌";
+        toast.warning(`${emoji} ${appName} not connected`, {
+          description: `Connect ${appName} in Integrations to run this action.`,
+          duration: 8000,
+          action: { label: "Open Integrations", onClick: goToIntegrations },
         });
+        // Inject a helpful assistant message
+        const connectMsg: ChatMessage = {
+          role: "assistant",
+          content: `I tried to run **${toolCall.action}** but **${appName}** isn't connected yet.\n\nTo fix this:\n1. Go to **Settings → Integrations** (or click the button above)\n2. Find **${appName}** and click **Connect**\n3. Complete the OAuth sign-in\n4. Come back and try again — I'll execute the action automatically.\n\nOnce connected, I'll have access to ${(agentContext?.connectedTools.filter(t => t.app === appName) || []).length || "all"} ${appName} tools.`,
+          timestamp: new Date().toISOString(),
+        };
         setConversations(prev => {
           const msgs = [...(prev[selectedAgent.id] || [])];
           const last = msgs[msgs.length - 1];
           if (last?.toolCall) {
             msgs[msgs.length - 1] = { ...last, toolCall: { ...last.toolCall, status: "error" } };
           }
-          return { ...prev, [selectedAgent.id]: msgs };
+          return { ...prev, [selectedAgent.id]: [...msgs, connectMsg] };
         });
       }
 
