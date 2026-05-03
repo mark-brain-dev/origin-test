@@ -8,7 +8,81 @@ const V1 = "https://backend.composio.dev/api/v1";
 const V2 = "https://backend.composio.dev/api/v2";
 const V3 = "https://backend.composio.dev/api/v3";
 
-// In-memory webhook event ring buffer (last 100 events)
+// ─── Server-side Gmail email cache ────────────────────────────────────────────
+// Pre-fetches emails on startup + every 3 min so /gmail/inbox responds in <50ms
+
+interface EmailCache {
+  emails: any[];
+  nextPageToken?: string;
+  fetchedAt: number;
+  connected: boolean;
+}
+
+const EMAIL_CACHE = new Map<string, EmailCache>(); // keyed by entityId
+const EMAIL_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
+
+async function prefetchGmailEmails(entityId = "default"): Promise<void> {
+  try {
+    const lookup = await fetch(`${V3}/connected_accounts?user_uuid=${entityId}&toolkit=gmail&status=ACTIVE&limit=5`, {
+      headers: { "x-api-key": process.env.COMPOSIO_API_KEY || "", "Content-Type": "application/json" },
+    });
+    if (!lookup.ok) return;
+    const ld = await lookup.json() as any;
+    const conn = (ld.items || [])[0];
+    if (!conn) { EMAIL_CACHE.set(entityId, { emails: [], connected: false, fetchedAt: Date.now() }); return; }
+
+    const connShortId = conn.id;
+    const connUuid = conn.deprecated?.uuid || conn.id;
+
+    const hdrsObj = { "x-api-key": process.env.COMPOSIO_API_KEY || "", "Content-Type": "application/json" };
+    const candidates = [
+      { action: "GMAIL_FETCH_EMAILS", input: { max_results: 50, query: "in:inbox", include_spam_trash: false } },
+      { action: "GMAIL_LIST_EMAILS", input: { max_results: 50, query: "in:inbox" } },
+    ];
+
+    for (const { action, input } of candidates) {
+      const r3 = await fetch(`${V3}/tools/execute/${action}`, {
+        method: "POST",
+        headers: hdrsObj,
+        body: JSON.stringify({ arguments: input, version: "latest", connected_account_id: connShortId }),
+      });
+      if (r3.ok) {
+        const d = await r3.json() as any;
+        const emails = normalizeEmails(d);
+        if (emails.length > 0) {
+          EMAIL_CACHE.set(entityId, {
+            emails,
+            nextPageToken: d?.data?.nextPageToken,
+            connected: true,
+            fetchedAt: Date.now(),
+          });
+          return;
+        }
+      }
+      const r2 = await fetch(`${V2}/actions/${action}/execute`, {
+        method: "POST",
+        headers: hdrsObj,
+        body: JSON.stringify({ input, connectedAccountId: connUuid }),
+      });
+      if (r2.ok) {
+        const d = await r2.json() as any;
+        const emails = normalizeEmails(d);
+        if (emails.length > 0) {
+          EMAIL_CACHE.set(entityId, { emails, connected: true, fetchedAt: Date.now() });
+          return;
+        }
+      }
+    }
+  } catch {
+    // Silent — cache just won't be populated this cycle
+  }
+}
+
+// Kick off initial pre-fetch after 2s (let server fully start) then every 3 min
+setTimeout(() => prefetchGmailEmails("default"), 2000);
+setInterval(() => prefetchGmailEmails("default"), EMAIL_CACHE_TTL_MS);
+
+// ─── In-memory webhook event ring buffer (last 100 events)
 const WEBHOOK_EVENTS: Array<{
   id: string;
   triggerName: string;
@@ -769,11 +843,42 @@ router.get("/calendar/events", async (req: Request, res: Response) => {
 });
 
 // GET /api/composio/gmail/inbox — fetch emails from Gmail via Composio
+// Returns server-side cache instantly (<50ms) on first load; triggers background refresh when stale
 router.get("/gmail/inbox", async (req: Request, res: Response) => {
   const entityId = (req.query.entityId as string) || "default";
-  const maxResults = parseInt((req.query.maxResults as string) || "25", 10);
+  const maxResults = parseInt((req.query.maxResults as string) || "50", 10);
   const query = (req.query.q as string) || "in:inbox";
   const pageToken = req.query.pageToken as string | undefined;
+  const forceRefresh = req.query.refresh === "true";
+
+  // ── Serve from server-side cache when available and not paginating ───────────
+  if (!pageToken && !forceRefresh) {
+    const cached = EMAIL_CACHE.get(entityId);
+    const cacheAge = cached ? Date.now() - cached.fetchedAt : Infinity;
+    const isFresh = cacheAge < EMAIL_CACHE_TTL_MS;
+
+    if (cached && cached.emails.length > 0) {
+      // Return cache immediately
+      res.json({
+        emails: cached.emails,
+        connected: cached.connected,
+        total: cached.emails.length,
+        fromCache: true,
+        cacheAgeSeconds: Math.round(cacheAge / 1000),
+        nextPageToken: cached.nextPageToken,
+      });
+      // Trigger background refresh if stale
+      if (!isFresh) {
+        prefetchGmailEmails(entityId).catch(() => {});
+      }
+      return;
+    }
+
+    // No cache yet — start a background pre-fetch for next time, then fall through to live fetch
+    if (!cached) {
+      prefetchGmailEmails(entityId).catch(() => {});
+    }
+  }
 
   try {
     // Find active Gmail connection
@@ -803,6 +908,10 @@ router.get("/gmail/inbox", async (req: Request, res: Response) => {
         const d = await safeJson(r3);
         const emails = normalizeEmails(d);
         if (emails.length > 0 || d?.data?.messages !== undefined || d?.response_data?.messages !== undefined) {
+          // Update server cache with live data (only for main inbox, not paginated results)
+          if (!pageToken) {
+            EMAIL_CACHE.set(entityId, { emails, connected: true, fetchedAt: Date.now(), nextPageToken: d?.data?.nextPageToken });
+          }
           res.json({ emails, connected: true, total: emails.length, action, engine: "v3", nextPageToken: d?.data?.nextPageToken });
           return;
         }
@@ -816,6 +925,9 @@ router.get("/gmail/inbox", async (req: Request, res: Response) => {
         const d = await safeJson(r2);
         const emails = normalizeEmails(d);
         if (emails.length > 0) {
+          if (!pageToken) {
+            EMAIL_CACHE.set(entityId, { emails, connected: true, fetchedAt: Date.now() });
+          }
           res.json({ emails, connected: true, total: emails.length, action, engine: "v2" });
           return;
         }

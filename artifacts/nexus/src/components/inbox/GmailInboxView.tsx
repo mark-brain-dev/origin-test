@@ -430,11 +430,14 @@ export default function GmailInboxView() {
                 const isStarred = starred.has(email.id);
                 const isSelected = selected?.id === email.id;
                 return (
-                  <button
+                  <div
                     key={email.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => markRead(email)}
+                    onKeyDown={e => { if (e.key === "Enter" || e.key === " ") markRead(email); }}
                     className={cn(
-                      "w-full text-left px-3 py-3 hover:bg-accent/50 transition-colors group relative",
+                      "w-full text-left px-3 py-3 hover:bg-accent/50 transition-colors group relative cursor-pointer",
                       isSelected && "bg-primary/5 border-l-2 border-primary",
                       !isRead && "bg-blue-500/[0.03]"
                     )}
@@ -457,13 +460,14 @@ export default function GmailInboxView() {
                       </div>
                     </div>
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); toggleStar(email.id); }}
                       className={cn("absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded", isStarred && "opacity-100 text-amber-400")}
                     >
                       {isStarred ? <Star className="h-3.5 w-3.5 fill-current" /> : <StarOff className="h-3.5 w-3.5 text-muted-foreground/50" />}
                     </button>
                     {!isRead && <div className="absolute left-1 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-blue-500" />}
-                  </button>
+                  </div>
                 );
               })}
 
