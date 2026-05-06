@@ -1,5 +1,0 @@
-[build]
-cmd = "pnpm run build"
-
-[start]
-cmd = "cd artifacts/api-server && node ./kill-port.mjs && sleep 1 && node --enable-source-maps ./dist/index.mjs"
